@@ -1,7 +1,16 @@
 [project]
 name = "aqi-mlops"
 version = "0.1.0"
-description = "Add your description here"
+description = "AQI MLOps — Weather & Air Quality data pipeline for ML prediction"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "requests>=2.32",
+    "pandas>=2.2",
+    "pyarrow>=16.0",
+    "boto3>=1.34",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    "ipykernel>=7.2.0",
+    "matplotlib>=3.10.8",
+]
