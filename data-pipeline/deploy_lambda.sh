@@ -2,7 +2,7 @@
 # deploy_lambda.sh — creates Lambda + EventBridge hourly trigger for AQI ingestion
 set -euo pipefail
 
-# ── Load .env ──────────────────────────────────────────────────────────────────
+# load .env
 source <(grep -v '^#' .env | sed 's/^/export /')
 
 REGION="${AWS_REGION:-us-east-1}"
@@ -20,7 +20,7 @@ ZIP_FILE="/tmp/aqi-lambda.zip"
 
 echo "── Account: $ACCOUNT_ID  Region: $REGION"
 
-# ── 1. Build deployment package ────────────────────────────────────────────────
+# 1. build package
 echo "── Building package..."
 rm -rf "$BUILD_DIR" && mkdir -p "$BUILD_DIR"
 cp data-pipeline/lambda/handler.py "$BUILD_DIR/"
@@ -47,12 +47,12 @@ cd "$BUILD_DIR" && zip -r "$ZIP_FILE" . -x "*.pyc" -x "*/__pycache__/*" > /dev/n
 cd - > /dev/null
 echo "   Package: $ZIP_FILE ($(du -sh $ZIP_FILE | cut -f1))"
 
-# ── 2. Upload zip to S3 (bypasses the 50 MB direct-upload limit) ──────────────
+# 2. upload zip to S3 (bypasses 50MB direct-upload limit)
 echo "── Uploading package to s3://$S3_BUCKET/$S3_ZIP_KEY ..."
 aws s3 cp "$ZIP_FILE" "s3://$S3_BUCKET/$S3_ZIP_KEY" --region "$REGION"
-echo "   ✅ Package uploaded"
+echo "   Package uploaded"
 
-# ── 2. IAM role ────────────────────────────────────────────────────────────────
+# 3. IAM role
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
 if ! aws iam get-role --role-name "$ROLE_NAME" &>/dev/null; then
     echo "── Creating IAM role: $ROLE_NAME..."
@@ -116,11 +116,11 @@ else
         --function-name "$FUNCTION_NAME" \
         --region "$REGION"
 fi
-echo "   ✅ Lambda ready"
+echo "   Lambda ready"
 
 LAMBDA_ARN="arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:${FUNCTION_NAME}"
 
-# ── 4. EventBridge rule — every hour ──────────────────────────────────────────
+# 5. EventBridge rule — every hour
 echo "── Creating EventBridge rule: $RULE_NAME..."
 RULE_ARN=$(aws events put-rule \
     --name "$RULE_NAME" \
@@ -131,7 +131,7 @@ RULE_ARN=$(aws events put-rule \
     --query RuleArn --output text)
 echo "   Rule ARN: $RULE_ARN"
 
-# ── 5. Permission for EventBridge to invoke Lambda ────────────────────────────
+# 6. EventBridge → Lambda permission
 aws lambda remove-permission \
     --function-name "$FUNCTION_NAME" \
     --statement-id "eventbridge-hourly" \
@@ -145,14 +145,14 @@ aws lambda add-permission \
     --source-arn "$RULE_ARN" \
     --region "$REGION" > /dev/null
 
-# ── 6. Set Lambda as EventBridge target ───────────────────────────────────────
+# 7. set Lambda as EventBridge target
 aws events put-targets \
     --rule "$RULE_NAME" \
     --targets "Id=aqi-lambda,Arn=${LAMBDA_ARN}" \
     --region "$REGION" > /dev/null
 
 echo ""
-echo "✅ Deployment complete!"
+echo "Deployment complete!"
 echo "   Lambda  : $LAMBDA_ARN"
 echo "   Trigger : every hour  (rate(1 hour))"
 echo "   S3 path : s3://${S3_BUCKET}/${S3_PREFIX}/year=YYYY/month=MM/day=DD/aqi_YYYY-MM-DD_HH.parquet"

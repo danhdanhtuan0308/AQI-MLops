@@ -14,11 +14,12 @@ import requests
 log = logging.getLogger()
 log.setLevel(logging.INFO)
 
-OWM_API_KEY = os.environ["OWM_API_KEY"]
-S3_BUCKET   = os.environ.get("S3_BUCKET", "weather-bulk")
-S3_PREFIX   = os.environ.get("S3_PREFIX", "hourly")
-SLEEP_SEC   = float(os.environ.get("SLEEP_SEC", "0.2"))
-AQI_URL     = "http://api.openweathermap.org/data/2.5/air_pollution"
+OWM_API_KEY  = os.environ["OWM_API_KEY"]
+S3_BUCKET    = os.environ.get("S3_BUCKET",    "weather-bulk")
+S3_PREFIX    = os.environ.get("S3_PREFIX",    "hourly")
+SLEEP_SEC    = float(os.environ.get("SLEEP_SEC", "0.2"))
+MERGE_LAMBDA = os.environ.get("MERGE_LAMBDA", "aqi-iceberg-merge")
+AQI_URL      = "http://api.openweathermap.org/data/2.5/air_pollution"
 
 # 99 cities inline — mirrors config.yaml
 CITIES = [
@@ -130,6 +131,14 @@ def handler(event, context):
     pq.write_table(pa.Table.from_pandas(df, preserve_index=False), buf, compression="snappy")
     buf.seek(0)
     s3.put_object(Bucket=S3_BUCKET, Key=key, Body=buf.getvalue())
-
     log.info("Uploaded s3://%s/%s  (%d cities)", S3_BUCKET, key, len(df))
+
+    lam = boto3.client("lambda")
+    lam.invoke(
+        FunctionName=MERGE_LAMBDA,
+        InvocationType="Event",  # async
+        Payload=json.dumps({"s3_key": key}).encode(),
+    )
+    log.info("Triggered %s with key=%s", MERGE_LAMBDA, key)
+
     return {"statusCode": 200, "body": json.dumps({"cities": len(df), "key": key})}
