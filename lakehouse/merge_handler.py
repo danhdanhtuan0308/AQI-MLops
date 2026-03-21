@@ -89,6 +89,11 @@ def handler(event, context):
 
     log.info("MERGE from s3://%s/%s", S3_BUCKET, s3_key)
 
+    # Register any new year/month/day partitions added by Lambda A
+    repair_id = run_query(f"MSCK REPAIR TABLE {ATHENA_DB}.raw_hourly")
+    repair_state = wait_query(repair_id)
+    log.info("MSCK REPAIR TABLE raw_hourly → %s", repair_state)
+
     sql = build_merge_sql(s3_key)
     exec_id = run_query(sql)
     log.info("Athena query started: %s", exec_id)
