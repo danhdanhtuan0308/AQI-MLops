@@ -21,6 +21,10 @@ data/
 .uv/
 uv.lock
 
+# Notebooks / experiments
+experiement/
+experiment/
+
 # IDE
 .vscode/
 .idea/
@@ -28,6 +32,3 @@ uv.lock
 # OS
 .DS_Store
 Thumbs.db
-
-
-experiement/
