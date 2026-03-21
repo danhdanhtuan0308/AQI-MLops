@@ -48,6 +48,31 @@ def wait_query(execution_id: str, timeout: int = 600) -> str:
     raise TimeoutError(f"Athena query {execution_id} timed out after {timeout}s")
 
 
+def parse_partition(s3_key: str) -> tuple[str, str, str]:
+    """Extract year, month, day from hourly S3 key.
+
+    Key format: hourly/year=YYYY/month=MM/day=DD/aqi_YYYY-MM-DD_HH.parquet
+    """
+    parts = {}
+    for segment in s3_key.split("/"):
+        if "=" in segment:
+            k, v = segment.split("=", 1)
+            parts[k] = v
+    return parts["year"], parts["month"], parts["day"]
+
+
+def build_add_partition_sql(s3_key: str) -> str:
+    """ALTER TABLE to register the exact partition containing this file."""
+    year, month, day = parse_partition(s3_key)
+    partition_dir = f"s3://{S3_BUCKET}/hourly/year={year}/month={month}/day={day}"
+    return (
+        f"ALTER TABLE {ATHENA_DB}.raw_hourly "
+        f"ADD IF NOT EXISTS "
+        f"PARTITION (year='{year}', month='{month}', day='{day}') "
+        f"LOCATION '{partition_dir}'"
+    )
+
+
 def build_merge_sql(s3_key: str) -> str:
     s3_path = f"s3://{S3_BUCKET}/{s3_key}"
     return f"""
@@ -89,10 +114,12 @@ def handler(event, context):
 
     log.info("MERGE from s3://%s/%s", S3_BUCKET, s3_key)
 
-    # Register any new year/month/day partitions added by Lambda A
-    repair_id = run_query(f"MSCK REPAIR TABLE {ATHENA_DB}.raw_hourly")
-    repair_state = wait_query(repair_id)
-    log.info("MSCK REPAIR TABLE raw_hourly → %s", repair_state)
+    # Register the exact partition for this file (ALTER TABLE is reliable; MSCK REPAIR can miss new partitions)
+    add_part_sql = build_add_partition_sql(s3_key)
+    log.info("Adding partition: %s", add_part_sql)
+    part_id = run_query(add_part_sql)
+    part_state = wait_query(part_id)
+    log.info("ADD PARTITION → %s", part_state)
 
     sql = build_merge_sql(s3_key)
     exec_id = run_query(sql)
