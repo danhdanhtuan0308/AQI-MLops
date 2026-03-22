@@ -29,6 +29,7 @@ from sklearn.metrics import precision_recall_fscore_support
 from .inference import (
     AQI_META,
     CITY_TIMEZONES,
+    FEATURES,
     batch_predict,
     build_feature_vector,
     load_artifacts,
@@ -342,7 +343,7 @@ def health() -> dict:
         "model_loaded":   _model is not None,
         "model_type":     "XGBoost multi:softprob",
         "n_classes":      5,
-        "n_features":     12,
+        "n_features":     len(FEATURES),
         "target":         "AQI @ T+1 (next hour)",
         "model_trained_on": trained_on,
         "n_cities":       len(KNOWN_CITIES),
