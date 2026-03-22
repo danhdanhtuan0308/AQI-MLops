@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 import yaml
 from dotenv import load_dotenv
+from sklearn.utils.class_weight import compute_sample_weight
 from xgboost import XGBClassifier
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -222,6 +223,11 @@ def main() -> None:
     feat_df = engineer_features(raw)
     X, y, median = build_arrays(feat_df)
 
+    # Log class distribution so imbalance is visible in MLflow
+    unique, counts = np.unique(y, return_counts=True)
+    for cls, cnt in zip(unique, counts):
+        log.info("  Class %d (AQI %d): %d rows  (%.1f%%)", cls, cls + 1, cnt, 100 * cnt / len(y))
+
     # ── Train ─────────────────────────────────────────────────────────────────────
     log.info(
         "Training on %d rows (%s)",
@@ -237,7 +243,7 @@ def main() -> None:
         n_jobs=-1,
         **BEST_PARAMS,
     )
-    model.fit(X, y, verbose=False)
+    model.fit(X, y, sample_weight=compute_sample_weight("balanced", y), verbose=False)
     log.info("Training complete")
 
     # ── MLflow run ─────────────────────────────────────────────────────────────
