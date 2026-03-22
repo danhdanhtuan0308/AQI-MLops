@@ -18,6 +18,7 @@ Usage
     mlflow ui --backend-store-uri ml/mlruns
 """
 
+import argparse
 import json
 import logging
 import os
@@ -78,8 +79,16 @@ mlflow.set_experiment(EXPERIMENT_NAME)
 
 # ── 1. Data loading ───────────────────────────────────────────────────────────
 
-def load_data() -> pd.DataFrame:
-    """Pull raw AQI data from AWS Athena (S3-backed Parquet lake)."""
+def load_data(lookback_weeks: int | None = None) -> pd.DataFrame:
+    """Pull raw AQI data from AWS Athena.
+
+    Parameters
+    ----------
+    lookback_weeks:
+        When set, restrict training data to the most recent N weeks.
+        Use ``None`` (default) to train on the full 12-month dataset.
+        Example: ``--lookback-weeks 8`` for a rolling 2-month retrain.
+    """
     import awswrangler as wr
 
     session = boto3.Session(
@@ -89,11 +98,17 @@ def load_data() -> pd.DataFrame:
         aws_session_token=os.environ.get("AWS_SESSION_TOKEN"),
     )
 
-    sql = """
+    where = (
+        f"WHERE timestamp >= current_timestamp - interval '{lookback_weeks}' week"
+        if lookback_weeks
+        else ""
+    )
+    sql = f"""
         SELECT
             timestamp, city, city_slug,
             aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3, source
         FROM aqi_db.aqi_unified
+        {where}
         ORDER BY city_slug ASC, timestamp ASC
     """
     raw = wr.athena.read_sql_query(
@@ -104,7 +119,6 @@ def load_data() -> pd.DataFrame:
         ctas_approach=False,
     )
 
-    # OWM occasionally emits class 6 — merge into class 5 (Very Poor)
     raw["aqi"] = pd.to_numeric(raw["aqi"], errors="coerce").astype("Int64").clip(upper=5)
     n_class6 = int((raw["aqi"] == 6).sum())
     log.info("Loaded %d rows from Athena  (%d cities)  [class-6 merged: %d]",
@@ -178,20 +192,42 @@ def build_arrays(feat_df: pd.DataFrame) -> tuple:
 # ── 4. Main pipeline ──────────────────────────────────────────────────────────
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="AQI XGBoost training pipeline")
+    parser.add_argument(
+        "--lookback-weeks",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Train on the most recent N weeks of data instead of the full dataset. "
+            "Recommended for weekly rolling retraining (e.g., --lookback-weeks 8). "
+            "Omit to train on the full 12-month history."
+        ),
+    )
+    args = parser.parse_args()
+
     log.info("=" * 70)
     log.info("  AQI XGBoost Training Pipeline")
     log.info("  Config  : %s", CONFIG_PATH.relative_to(ROOT))
     log.info("  Model   : %s", SELECTED_NAME)
     log.info("  CV F1   : %.6f  |  Val F1 (notebook): %.6f", CV_F1, VAL_F1)
+    log.info(
+        "  Lookback: %s",
+        f"last {args.lookback_weeks} weeks" if args.lookback_weeks else "full dataset (12 months)",
+    )
     log.info("=" * 70)
 
-    # ── Data ──────────────────────────────────────────────────────────────────
-    raw     = load_data()
+    # ── Data ─────────────────────────────────────────────────────────────────────
+    raw     = load_data(args.lookback_weeks)
     feat_df = engineer_features(raw)
     X, y, median = build_arrays(feat_df)
 
-    # ── Train on full dataset ─────────────────────────────────────────────────
-    log.info("Training on full dataset (%d rows)", len(feat_df))
+    # ── Train ─────────────────────────────────────────────────────────────────────
+    log.info(
+        "Training on %d rows (%s)",
+        len(feat_df),
+        f"last {args.lookback_weeks} weeks" if args.lookback_weeks else "full dataset",
+    )
     model = XGBClassifier(
         objective="multi:softprob",
         num_class=5,
@@ -215,6 +251,7 @@ def main() -> None:
         mlflow.log_param("n_features",      len(FEATURES))
         mlflow.log_param("features",        json.dumps(FEATURES))
         mlflow.log_param("total_rows",      len(X))
+        mlflow.log_param("lookback_weeks",  args.lookback_weeks or "full")
 
         # --- reference metrics from hyper-parameter search --------------------
         mlflow.log_metric("cv_f1",           CV_F1)

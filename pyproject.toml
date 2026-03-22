@@ -20,4 +20,25 @@ dependencies = [
     "mlflow>=2.18.0",
     "jinja2>=3.1.6",
     "seaborn>=0.13.2",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "httpx>=0.27",
+    "ruff>=0.4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E501"]

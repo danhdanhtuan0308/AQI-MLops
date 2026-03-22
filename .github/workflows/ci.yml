@@ -1,0 +1,39 @@
+name: CI — Lint & Test
+
+on:
+  push:
+    branches: [main, dev, "feature/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Lint + Unit Tests (Python 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up uv + Python 3.12
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies (main + dev group)
+        run: uv sync --group dev
+
+      - name: Lint with ruff
+        run: uv run ruff check app/ ml/ tests/
+
+      - name: Run all tests
+        run: uv run pytest tests/ -v --tb=short -q
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_id }}
+          path: .pytest_cache/
+          retention-days: 7

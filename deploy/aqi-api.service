@@ -1,0 +1,27 @@
+[Unit]
+Description=AQI MLOps — FastAPI Prediction Service
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+User=__USER__
+Group=__USER__
+WorkingDirectory=__APP_DIR__
+EnvironmentFile=__APP_DIR__/.env
+
+# uvicorn bound to localhost only — nginx handles public traffic
+ExecStart=__APP_DIR__/.venv/bin/uvicorn app.main:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --workers 1 \
+    --log-level info
+
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aqi-api
+
+[Install]
+WantedBy=multi-user.target

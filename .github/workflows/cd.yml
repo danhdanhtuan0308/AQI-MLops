@@ -1,0 +1,76 @@
+name: CD — Deploy to EC2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "ml/model-registry/**"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+
+# Only one deploy at a time
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  # ── CI gate must pass first ─────────────────────────────────────────────────
+  ci:
+    name: CI gate
+    uses: ./.github/workflows/ci.yml
+
+  # ── Deploy to EC2 t4g.small ─────────────────────────────────────────────────
+  deploy:
+    name: Deploy to EC2
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+
+    steps:
+      - name: Write SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2.pem
+          chmod 600 ~/.ssh/ec2.pem
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy & health-check
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          ssh -i ~/.ssh/ec2.pem -o StrictHostKeyChecking=no "$EC2_USER@$EC2_HOST" << 'ENDSSH'
+            set -euo pipefail
+            cd ~/AQI-MLops
+
+            echo "── Pulling latest code ──────────────────────────────"
+            git pull origin main
+
+            echo "── Installing / updating dependencies ───────────────"
+            uv sync
+
+            echo "── Restarting API service ────────────────────────────"
+            sudo systemctl restart aqi-api
+            sleep 6
+
+            echo "── Health check ──────────────────────────────────────"
+            STATUS=$(curl -sf http://localhost:8000/health \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])" \
+              2>/dev/null || echo "error")
+
+            if [ "$STATUS" = "ok" ]; then
+              echo "✓ Deploy successful — API is healthy"
+            else
+              echo "✗ Health check failed"
+              sudo systemctl status aqi-api --no-pager -l
+              exit 1
+            fi
+          ENDSSH
+
+      # Required secrets:
+      #   EC2_SSH_KEY  — private PEM key content
+      #   EC2_HOST     — public DNS or IP   (e.g.  ec2-1-2-3-4.compute-1.amazonaws.com)
+      #   EC2_USER     — login user          (ubuntu)
