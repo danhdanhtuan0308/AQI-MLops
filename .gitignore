@@ -23,7 +23,6 @@ uv.lock
 
 # Notebooks / experiments
 experiement/
-experiment/
 
 # IDE
 .vscode/
@@ -32,3 +31,6 @@ experiment/
 # OS
 .DS_Store
 Thumbs.db
+
+
+ml/mlruns
