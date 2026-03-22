@@ -28,6 +28,7 @@ COPY --from=deps /app/.venv /app/.venv
 
 # Copy application source
 COPY app/ ./app/
+COPY data-pipeline/config.yaml ./data-pipeline/config.yaml
 COPY ml/__init__.py ./ml/__init__.py
 
 # model-registry is bind-mounted at runtime — just create the directory
