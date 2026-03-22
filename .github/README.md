@@ -51,10 +51,11 @@ Steps:
 1. Writes the SSH private key from `EC2_SSH_KEY` secret to `~/.ssh/ec2.pem`
 2. `ssh-keyscan` adds the host to `known_hosts` (no interactive prompts)
 3. SSH into EC2 and runs:
-   - `git pull origin main`
-   - `uv sync` (install any new deps)
-   - `sudo systemctl restart aqi-api`
-   - `sleep 6` then `curl http://localhost:8000/health` — workflow fails if health check doesn't return `"status": "ok"`
+   - `git fetch origin main && git reset --hard origin/main && git clean -fd` — hard reset (never blocked by local changes)
+   - `docker compose build` — rebuilds the image using the updated code + `uv.lock`
+   - `docker compose up -d` — replaces the running container with the new image
+   - `sleep 8` then `curl http://localhost:8000/health` — workflow fails if health check doesn't return `"status": "ok"`
+   - On failure: `docker compose logs --tail=50` is printed before exiting
 
 **Required Secrets:**
 

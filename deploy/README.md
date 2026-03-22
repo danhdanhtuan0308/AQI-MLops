@@ -1,6 +1,6 @@
 # deploy/ — EC2 Deployment Files
 
-Infrastructure-as-code for running the AQI API on an AWS EC2 t4g.small (ARM64 Graviton, Ubuntu 24.04). Includes a one-time bootstrap script, a systemd service unit, and an nginx reverse-proxy config.
+Infrastructure-as-code for running the AQI API on an AWS EC2 t4g.small (ARM64 Graviton, Ubuntu 24.04). The service runs inside Docker, managed by a systemd unit that wraps `docker compose`.
 
 ---
 
@@ -8,9 +8,9 @@ Infrastructure-as-code for running the AQI API on an AWS EC2 t4g.small (ARM64 Gr
 
 ```
 deploy/
-├── setup_ec2.sh      # One-time bootstrap: install deps, clone repo, configure nginx + systemd
-├── aqi-api.service   # systemd unit — runs uvicorn, auto-restarts on failure
-└── nginx.conf        # nginx reverse proxy: port 80 → 127.0.0.1:8000
+├── setup_ec2.sh      # One-time bootstrap: install Docker, clone repo, configure nginx + systemd
+├── aqi-api.service   # systemd unit — manages docker compose lifecycle, auto-restarts on failure
+└── nginx.conf        # nginx reverse proxy: port 80 → 127.0.0.1:8000 (Docker container)
 ```
 
 ---
@@ -40,49 +40,58 @@ deploy/
 One-time bootstrap script. Run once after launching a fresh EC2 instance.
 
 **What it does (in order):**
-1. `apt-get` installs: `git`, `curl`, `nginx`, `build-essential`, `libssl-dev`
-2. Installs `uv` (ARM64-native Python package manager) to `~/.local/bin`
-3. Clones `danhdanhtuan0308/AQI-MLops` from GitHub (or pulls if already cloned)
-4. Runs `uv sync` to install all Python dependencies into `.venv`
+1. `apt-get` installs: `git`, `curl`, `nginx`
+2. Installs Docker Engine via the official convenience script (`get.docker.com`) — includes `docker compose` plugin
+3. Adds `ubuntu` to the `docker` group (`sudo usermod -aG docker ubuntu`)
+4. Clones `danhdanhtuan0308/AQI-MLops` from GitHub (or hard-resets if already cloned)
 5. Copies `.env.example` → `.env` if `.env` doesn't exist yet
 6. Installs nginx config: copies `deploy/nginx.conf` → `/etc/nginx/sites-available/aqi-api`, symlinks into `sites-enabled`, removes default site, tests and restarts nginx
 7. Installs systemd service: copies `deploy/aqi-api.service`, substitutes `__USER__` and `__APP_DIR__` tokens, runs `systemctl daemon-reload` and `systemctl enable aqi-api`
 
-**After the script:** fill in `.env` with real credentials, then `sudo systemctl start aqi-api`.
+**After the script:**
+```bash
+nano ~/AQI-MLops/.env              # fill in OWM_API_KEY, AWS credentials
+newgrp docker                      # activate docker group in current shell
+cd ~/AQI-MLops && docker compose build
+sudo systemctl start aqi-api
+curl http://localhost:8000/health
+```
+
+**The script does NOT build the image or start the service** — fill in `.env` first.
 
 ```bash
 # Run on a fresh instance:
 chmod +x setup_ec2.sh && ./setup_ec2.sh
 ```
 
-**The script does NOT start the service** — this is intentional so you have time to fill in `.env` first.
-
 ---
 
 ## aqi-api.service
 
-systemd unit file for the FastAPI application.
+systemd unit file — manages the Docker Compose lifecycle for the FastAPI container.
 
 **Key settings:**
-- Runs: `uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1`
-- Loads environment from: `__APP_DIR__/.env` (substituted to `/home/ubuntu/AQI-MLops/.env`)
-- `Restart=on-failure`, `RestartSec=10s` — auto-restarts if the process crashes
-- `After=network.target` — waits for network before starting
+- `ExecStart=/usr/bin/docker compose up` — starts the container defined in `docker-compose.yml`
+- `ExecStop=/usr/bin/docker compose down` — graceful shutdown
+- `After=network.target docker.service`, `Requires=docker.service` — waits for Docker daemon
+- `Restart=on-failure`, `RestartSec=10s` — auto-restarts if compose exits unexpectedly
+- `WorkingDirectory` is set to the repo root (substituted from `__APP_DIR__`)
 
-The service listens on `127.0.0.1:8000` (localhost only). nginx forwards port 80 traffic to it.
+The container binds port `127.0.0.1:8000` (localhost only). nginx forwards port 80 traffic to it.
 
 **Useful commands:**
 ```bash
 sudo systemctl status aqi-api
 sudo systemctl restart aqi-api
-sudo journalctl -u aqi-api -f       # tail logs
+sudo journalctl -u aqi-api -f      # tail systemd logs
+docker compose logs -f             # tail container logs directly
 ```
 
 ---
 
 ## nginx.conf
 
-Reverse proxy configuration. Listens on port 80 and forwards all requests to the uvicorn process at `127.0.0.1:8000`.
+Reverse proxy configuration. Listens on port 80 and forwards all requests to the Docker container at `127.0.0.1:8000`.
 
 **Security headers included:**
 - `X-Content-Type-Options: nosniff`
@@ -97,9 +106,9 @@ Reverse proxy configuration. Listens on port 80 and forwards all requests to the
 
 The `cd.yml` workflow SSH-deploys to this instance on every push to `main` that touches `app/**`, `ml/model-registry/**`, `pyproject.toml`, or `uv.lock`. It:
 1. Runs the CI gate (`ci.yml`) first — deploy is blocked if tests fail
-2. SSH: `git pull origin main`
-3. SSH: `uv sync`
-4. SSH: `sudo systemctl restart aqi-api`
+2. SSH: `git fetch origin main && git reset --hard origin/main && git clean -fd` — hard reset (never blocked by local changes)
+3. SSH: `docker compose build` — rebuilds the image from the updated code
+4. SSH: `docker compose up -d` — replaces running container with the new image
 5. SSH: `curl http://localhost:8000/health` — fails the workflow if the service doesn't respond
 
 Required GitHub Secrets: `EC2_SSH_KEY`, `EC2_HOST`, `EC2_USER`.
@@ -115,8 +124,8 @@ scp -i ~/.ssh/aqi-mlops-key.pem .env ubuntu@3.94.115.44:~/AQI-MLops/.env
 # Copy model artifacts (first time)
 scp -i ~/.ssh/aqi-mlops-key.pem ml/model-registry/* ubuntu@3.94.115.44:~/AQI-MLops/ml/model-registry/
 
-# Restart the service
-ssh -i ~/.ssh/aqi-mlops-key.pem ubuntu@3.94.115.44 "sudo systemctl restart aqi-api"
+# Restart the container
+ssh -i ~/.ssh/aqi-mlops-key.pem ubuntu@3.94.115.44 "cd ~/AQI-MLops && docker compose up -d"
 
 # Verify
 curl http://3.94.115.44/health
