@@ -86,6 +86,22 @@ jobs:
             ml/model-registry/median.json
           retention-days: 30
 
+      - name: Push model artifacts to EC2
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST:    ${{ secrets.EC2_HOST }}
+          EC2_USER:    ${{ secrets.EC2_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$EC2_SSH_KEY" > ~/.ssh/ec2.pem
+          chmod 600 ~/.ssh/ec2.pem
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          scp -i ~/.ssh/ec2.pem \
+            ml/model-registry/model.ubj \
+            ml/model-registry/median.json \
+            "$EC2_USER@$EC2_HOST:~/AQI-MLops/ml/model-registry/"
+          echo "✓ Model artifacts uploaded to EC2"
+
       - name: Hot-reload deployed API
         if: ${{ vars.API_URL != '' }}
         run: |
