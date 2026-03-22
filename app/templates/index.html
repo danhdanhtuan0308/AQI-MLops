@@ -101,7 +101,7 @@
               class="px-6 py-2.5 text-sm font-semibold transition-colors -mb-px">
         &#128268; Data Drift
       </button>
-      <button @click="activeTab = 'system'; fetchMeta()"
+      <button @click="activeTab = 'system'; fetchMeta(); fetchLiveMetrics()"
               :class="activeTab === 'system' ? 'border-b-2 border-green-500 text-white' : 'text-gray-500 hover:text-gray-300'"
               class="px-6 py-2.5 text-sm font-semibold transition-colors -mb-px">
         &#128736; System
@@ -378,6 +378,80 @@
 
       </div>
 
+      <!-- Live Production Metrics -->
+      <div x-show="meta && !metaLoading" x-transition class="space-y-3">
+        <div class="flex items-center justify-between">
+          <h2 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Live Production Metrics &mdash; last 7 days</h2>
+          <span x-show="metricsLoading" class="text-xs text-gray-500 animate-pulse">Computing&hellip;</span>
+          <span x-show="!metricsLoading && liveMetrics" class="text-xs text-gray-600" x-text="liveMetrics?.computed_at || ''"></span>
+          <span x-show="!metricsLoading && !liveMetrics && !selectedCity" class="text-xs text-gray-600">Select a city in Forecast tab first</span>
+          <span x-show="!metricsLoading && !liveMetrics && selectedCity" class="text-xs text-orange-400">Need &ge; 10 labelled rows in Athena</span>
+        </div>
+
+        <!-- F1 / Precision / Recall giant cards -->
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+
+          <div class="rounded-2xl p-5 border border-gray-800 space-y-2" style="background:#0d1224">
+            <p class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Weighted F1</p>
+            <p class="font-black text-4xl"
+               :class="liveMetrics ? (liveMetrics.weighted.f1 >= 0.8 ? 'text-green-400' : liveMetrics.weighted.f1 >= 0.6 ? 'text-yellow-400' : 'text-red-400') : 'text-gray-700'"
+               x-text="liveMetrics ? (liveMetrics.weighted.f1 * 100).toFixed(1) + '%' : (metricsLoading ? '\u2026' : '\u2014')"></p>
+            <p class="text-xs text-gray-600" x-text="liveMetrics ? liveMetrics.n_predictions + ' predictions' : ''"></p>
+          </div>
+
+          <div class="rounded-2xl p-5 border border-gray-800 space-y-2" style="background:#0d1224">
+            <p class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Weighted Precision</p>
+            <p class="font-black text-4xl"
+               :class="liveMetrics ? (liveMetrics.weighted.precision >= 0.8 ? 'text-green-400' : liveMetrics.weighted.precision >= 0.6 ? 'text-yellow-400' : 'text-red-400') : 'text-gray-700'"
+               x-text="liveMetrics ? (liveMetrics.weighted.precision * 100).toFixed(1) + '%' : (metricsLoading ? '\u2026' : '\u2014')"></p>
+            <p class="text-xs text-gray-500 mt-1">TP / (TP + FP) per class</p>
+          </div>
+
+          <div class="rounded-2xl p-5 border border-gray-800 space-y-2" style="background:#0d1224">
+            <p class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Weighted Recall</p>
+            <p class="font-black text-4xl"
+               :class="liveMetrics ? (liveMetrics.weighted.recall >= 0.8 ? 'text-green-400' : liveMetrics.weighted.recall >= 0.6 ? 'text-yellow-400' : 'text-red-400') : 'text-gray-700'"
+               x-text="liveMetrics ? (liveMetrics.weighted.recall * 100).toFixed(1) + '%' : (metricsLoading ? '\u2026' : '\u2014')"></p>
+            <p class="text-xs text-gray-500 mt-1">TP / (TP + FN) per class</p>
+          </div>
+
+        </div>
+
+        <!-- Per-class breakdown table -->
+        <div x-show="liveMetrics" x-transition class="rounded-2xl p-5 border border-gray-800" style="background:#0d1224">
+          <h3 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-3">Per-Class Breakdown</h3>
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-[10px] text-gray-500 uppercase">
+                <th class="text-left pb-2">AQI Class</th>
+                <th class="text-right pb-2">F1</th>
+                <th class="text-right pb-2">Precision</th>
+                <th class="text-right pb-2">Recall</th>
+                <th class="text-right pb-2">Support</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="[cls, m] in Object.entries(liveMetrics?.per_class || {})" :key="cls">
+                <tr class="border-t border-gray-800">
+                  <td class="py-1.5 text-gray-300 font-medium">
+                    <span class="inline-block w-2 h-2 rounded-full mr-1.5"
+                          :style="'background:' + _aqiColors[+cls]"></span>
+                    <span x-text="cls + ' \u00b7 ' + ['','Good','Fair','Moderate','Poor','Very Poor'][+cls]"></span>
+                  </td>
+                  <td class="py-1.5 text-right tabular-nums"
+                      :class="m.f1 >= 0.8 ? 'text-green-400' : m.f1 >= 0.5 ? 'text-yellow-400' : 'text-red-400'"
+                      x-text="(m.f1 * 100).toFixed(1) + '%'"></td>
+                  <td class="py-1.5 text-right tabular-nums text-gray-300" x-text="(m.precision * 100).toFixed(1) + '%'"></td>
+                  <td class="py-1.5 text-right tabular-nums text-gray-300" x-text="(m.recall * 100).toFixed(1) + '%'"></td>
+                  <td class="py-1.5 text-right tabular-nums text-gray-500" x-text="m.support"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+
+      </div>
+
       <!-- Data freshness + drift summary row -->
       <div x-show="meta && !metaLoading" x-transition class="grid grid-cols-1 sm:grid-cols-2 gap-4">
 
@@ -515,6 +589,11 @@
       _refreshTimer:  null,
       _cdTimer:       null,
 
+      // live production metrics state
+      liveMetrics:    null,
+      metricsLoading: false,
+      metricsCity:    null,
+
       // chart instances
       _probaChart:    null,
       _histChart:     null,
@@ -597,6 +676,7 @@
           this._computeAccuracy()
           // Reset drift cache when city changes
           if (this.driftCity !== this.selectedCity) { this.drift = null; this.driftCity = null }
+          if (this.metricsCity !== this.selectedCity) { this.liveMetrics = null; this.metricsCity = null }
 
           // Wait for Alpine's x-transition (150ms) to finish showing the canvas
           // sections before Chart.js queries their dimensions.
@@ -956,6 +1036,23 @@
         }
       },
 
+      async fetchLiveMetrics() {
+        if (!this.selectedCity) return
+        if (this.metricsCity === this.selectedCity && this.liveMetrics) return  // cached
+        this.metricsLoading = true
+        this.liveMetrics    = null
+        try {
+          const res = await fetch(`/metrics/${this.selectedCity}?hours=168`)
+          if (!res.ok) { this.metricsLoading = false; return }  // e.g. <10 labelled rows
+          this.liveMetrics  = await res.json()
+          this.metricsCity  = this.selectedCity
+        } catch(e) {
+          // silent — metrics only available once Athena has ground-truth
+        } finally {
+          this.metricsLoading = false
+        }
+      },
+
       _startAutoRefresh() {
         // Countdown ticks every second
         this._cdTimer = setInterval(() => {
@@ -966,6 +1063,7 @@
           if (this.selectedCity) await this.fetchAll()
           if (this.driftCity)    await this.fetchDrift()
           await this.fetchMeta()
+          if (this.selectedCity) { this.metricsCity = null; await this.fetchLiveMetrics() }
           this.nextRefreshSec = 3600
         }, 60 * 60 * 1000)
       },
@@ -973,6 +1071,7 @@
       async triggerRefresh() {
         if (this.selectedCity) await this.fetchAll()
         await this.fetchMeta()
+        if (this.selectedCity) { this.metricsCity = null; await this.fetchLiveMetrics() }
         this.nextRefreshSec = 3600
       },
 
