@@ -9,7 +9,6 @@ from __future__ import annotations
 import datetime
 from unittest.mock import patch
 
-import numpy as np
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient

@@ -88,7 +88,7 @@ def _athena(sql: str) -> pd.DataFrame:
     )
 
 
-# ── Routes 
+# ── Routes
 
 @app.get("/cities", summary="List all cities with their coordinates")
 def list_cities() -> list[dict]:
