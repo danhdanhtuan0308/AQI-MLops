@@ -22,7 +22,10 @@ def ensure_test_artifacts():
     inference tests pass without the real production model.
     """
     reg = Path("ml/model-registry")
-    if not (reg / "model.ubj").exists():
+    needs_artifacts = not all(
+        (reg / f).exists() for f in ("model.ubj", "median.json", "features.json")
+    )
+    if needs_artifacts:
         from xgboost import XGBClassifier
 
         reg.mkdir(parents=True, exist_ok=True)
