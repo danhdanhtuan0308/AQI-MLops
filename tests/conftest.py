@@ -18,7 +18,7 @@ import pytest
 def ensure_test_artifacts():
     """
     If ml/model-registry/model.ubj is missing, build a minimal XGBoost model
-    (100 synthetic rows, 5 classes, 12 features) so FastAPI startup and
+    (100 synthetic rows, 5 classes, 14 features) so FastAPI startup and
     inference tests pass without the real production model.
     """
     reg = Path("ml/model-registry")
@@ -30,7 +30,7 @@ def ensure_test_artifacts():
 
         reg.mkdir(parents=True, exist_ok=True)
         rng = np.random.default_rng(42)
-        X = rng.random((100, 12)).astype("float32")
+        X = rng.random((100, 14)).astype("float32")
         y = rng.integers(0, 5, 100)
 
         m = XGBClassifier(
@@ -45,8 +45,8 @@ def ensure_test_artifacts():
         m.save_model(str(reg / "model.ubj"))
 
         features = [
-            "aqi_lag1", "pm10_lag1", "hour_sin", "hour_cos", "pm25_ratio",
-            "co", "no", "no2", "o3", "so2", "nh3", "pm10",
+            "aqi_lag1", "pm10_lag1", "hour_sin", "hour_cos", "month_sin", "month_cos",
+            "pm25_ratio", "co", "no", "no2", "o3", "so2", "nh3", "pm10",
         ]
         (reg / "median.json").write_text(json.dumps({f: 1.0 for f in features}))
         (reg / "features.json").write_text(

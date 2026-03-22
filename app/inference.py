@@ -19,6 +19,8 @@ FEATURES: list[str] = [
     "pm10_lag1",   # PM10 at T-1
     "hour_sin",    # sin(2π·hour/24)
     "hour_cos",    # cos(2π·hour/24)
+    "month_sin",   # sin(2π·month/12)
+    "month_cos",   # cos(2π·month/12)
     "pm25_ratio",  # PM2.5 / Σ pollutants at T
     "co", "no", "no2", "o3", "so2", "nh3", "pm10",  # point-in-time pollutants at T
 ]
@@ -169,14 +171,15 @@ def build_feature_vector(
     median: dict,
 ) -> np.ndarray:
     """
-    Build the 12-feature (1, 12) float32 array for a single (T-1, T) pair.
+    Build the 14-feature (1, 14) float32 array for a single (T-1, T) pair.
 
     row_prev  — Athena row at T-1: needs 'aqi', 'pm10'
     row_curr  — Athena row at T:   needs 'timestamp', pollutant columns
     median    — fallback dict keyed by feature name
     """
-    ts   = row_curr["timestamp"]
-    hour = ts.hour if hasattr(ts, "hour") else int(str(ts)[11:13])
+    ts    = row_curr["timestamp"]
+    hour  = ts.hour  if hasattr(ts, "hour")  else int(str(ts)[11:13])
+    month = ts.month if hasattr(ts, "month") else int(str(ts)[5:7])
 
     pm2_5 = _safe(row_curr.get("pm2_5"), median.get("pm25_ratio", 0))
     pm10  = _safe(row_curr.get("pm10"),  median.get("pm10", 0))
@@ -191,6 +194,8 @@ def build_feature_vector(
         "pm10_lag1":  _safe(row_prev.get("pm10"), median.get("pm10_lag1", 0)),
         "hour_sin":   float(np.sin(2 * np.pi * hour / 24)),
         "hour_cos":   float(np.cos(2 * np.pi * hour / 24)),
+        "month_sin":  float(np.sin(2 * np.pi * month / 12)),
+        "month_cos":  float(np.cos(2 * np.pi * month / 12)),
         "pm25_ratio": round(pm25_ratio, 4),
         "co":  _safe(row_curr.get("co"),  median.get("co", 0)),
         "no":  _safe(row_curr.get("no"),  median.get("no", 0)),

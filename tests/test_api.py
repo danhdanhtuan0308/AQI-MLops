@@ -57,7 +57,7 @@ class TestHealth:
         assert client.get("/health").json()["model_loaded"] is True
 
     def test_n_features(self, client):
-        assert client.get("/health").json()["n_features"] == 12
+        assert client.get("/health").json()["n_features"] == 14
 
 
 # ── /cities ───────────────────────────────────────────────────────────────────

@@ -65,6 +65,7 @@ FEATURES = [
     "aqi_lag1",                                        # Baseline State  (T-1)
     "pm10_lag1",                                       # Historical Trend (T-1)
     "hour_sin", "hour_cos",                            # Temporal Cycle  (T)
+    "month_sin", "month_cos",                          # Seasonal Cycle  (T)
     "pm25_ratio", "co", "no", "no2", "o3", "so2", "nh3", "pm10",  # Point-in-time (T)
 ]
 TARGET = "aqi_next"   # AQI 1-5 at T+1 (0-indexed → 0-4 for XGBoost internally)
@@ -136,7 +137,8 @@ def engineer_features(raw: pd.DataFrame) -> pd.DataFrame:
     Feature diagram
     ---------------
     pm10_lag1, aqi_lag1   (T-1)  Historical trend / baseline state
-    hour_sin, hour_cos    (T)    Temporal cycle
+    hour_sin, hour_cos    (T)    Temporal cycle — time of day
+    month_sin, month_cos  (T)    Seasonal cycle — month of year
     pm25_ratio            (T)    PM2.5 share of total pollution burden
     co, no, no2, o3,      (T)    Point-in-time pollutants
       so2, nh3, pm10
@@ -152,6 +154,10 @@ def engineer_features(raw: pd.DataFrame) -> pd.DataFrame:
     # Temporal cycle — encode hour as sine/cosine pair
     raw["hour_sin"] = np.sin(2 * np.pi * raw["timestamp"].dt.hour / 24).round(6)
     raw["hour_cos"] = np.cos(2 * np.pi * raw["timestamp"].dt.hour / 24).round(6)
+
+    # Seasonal cycle — encode month as sine/cosine pair
+    raw["month_sin"] = np.sin(2 * np.pi * raw["timestamp"].dt.month / 12).round(6)
+    raw["month_cos"] = np.cos(2 * np.pi * raw["timestamp"].dt.month / 12).round(6)
 
     # Sort so shift() is correct within each city
     raw = raw.sort_values(["city_slug", "timestamp"]).reset_index(drop=True)
