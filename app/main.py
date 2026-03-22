@@ -138,21 +138,21 @@ def predict_city(city_slug: str) -> dict:
 @app.get("/history/{city_slug}", summary="Predicted vs actual AQI history")
 def city_history(
     city_slug: str,
-    hours: int = Query(default=48, ge=1, le=168, description="Look-back window in hours (max 168 = 7 days)"),
+    hours: int = Query(default=48, ge=1, le=4320, description="Look-back window in hours (max 4320 = 6 months)"),
 ) -> list[dict]:
     """
     Returns a time-ordered list of {timestamp, predicted, actual, current_aqi}.
     `actual` is the ground-truth AQI for the hour after `timestamp`.
     """
     slug  = _validate_city(city_slug)
-    limit = hours + 2   # extra rows needed for lag computation
+    fetch = hours + 2   # extra rows needed for lag computation
 
     df = _athena(f"""
         SELECT timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
         FROM aqi_db.aqi_unified
         WHERE city_slug = '{slug}'
+          AND timestamp >= current_timestamp - interval '{fetch}' hour
         ORDER BY timestamp DESC
-        LIMIT {limit}
     """)
     df = df.sort_values("timestamp").reset_index(drop=True)
     df["aqi"] = pd.to_numeric(df["aqi"], errors="coerce").clip(upper=5)
