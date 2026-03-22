@@ -100,7 +100,7 @@ def load_data(lookback_weeks: int | None = None) -> pd.DataFrame:
     )
 
     where = (
-        f"WHERE timestamp >= current_timestamp - interval '{lookback_weeks}' week"
+        f"WHERE timestamp >= current_timestamp - interval '{lookback_weeks * 7}' day"
         if lookback_weeks
         else ""
     )
