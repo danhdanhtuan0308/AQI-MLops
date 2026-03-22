@@ -1,0 +1,42 @@
+.git/
+.venv/
+.env
+*.pem
+*.key
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Data files
+*.parquet
+*.csv
+data/
+
+# Experiments / notebooks
+experiement/
+
+# ML tracking (not needed in image)
+ml/mlruns/
+ml/best-config.yaml
+
+# Testing
+tests/
+
+# Deploy scripts
+deploy/
+
+# CI/CD
+.github/
+
+# Docs
+README.md
+*.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/

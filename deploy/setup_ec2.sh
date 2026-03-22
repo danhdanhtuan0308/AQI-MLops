@@ -22,29 +22,30 @@ echo "════════════════════════�
 # ── 1. System packages ────────────────────────────────────────────────────────
 echo "── Installing system packages ───────────────────────────"
 sudo apt-get update -y -qq
-sudo apt-get install -y -qq git curl nginx build-essential libssl-dev
+sudo apt-get install -y -qq git curl nginx
 
-# ── 2. uv (fast Python package manager, ARM64-native) ─────────────────────────
-echo "── Installing uv ────────────────────────────────────────"
-curl -LsSf https://astral.sh/uv/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+# ── 2. Docker ─────────────────────────────────────────────────────────────────
+echo "── Installing Docker ────────────────────────────────────"
+sudo apt-get install -y -qq docker.io docker-compose-plugin
+sudo systemctl enable docker
+sudo systemctl start docker
+# Allow ubuntu user to run docker without sudo
+sudo usermod -aG docker "$USER"
+echo "   Docker $(docker --version) installed"
 
 # ── 3. Clone repo ─────────────────────────────────────────────────────────────
 echo "── Cloning repository ───────────────────────────────────"
 if [ -d "$APP_DIR/.git" ]; then
-    echo "   Repo already exists — pulling latest"
-    git -C "$APP_DIR" pull origin main
+    echo "   Repo already exists — hard-resetting to main"
+    git -C "$APP_DIR" fetch origin main
+    git -C "$APP_DIR" reset --hard origin/main
+    git -C "$APP_DIR" clean -fd
 else
     git clone "$REPO_URL" "$APP_DIR"
 fi
 cd "$APP_DIR"
 
-# ── 4. Python env + dependencies ──────────────────────────────────────────────
-echo "── Installing Python 3.12 environment via uv ────────────"
-uv sync
-
-# ── 5. .env file ──────────────────────────────────────────────────────────────
+# ── 4. .env file ──────────────────────────────────────────────────────────────
 if [ ! -f "$APP_DIR/.env" ]; then
     cp "$APP_DIR/.env.example" "$APP_DIR/.env"
     echo ""
@@ -53,7 +54,7 @@ if [ ! -f "$APP_DIR/.env" ]; then
     echo ""
 fi
 
-# ── 6. nginx reverse proxy ────────────────────────────────────────────────────
+# ── 5. nginx reverse proxy ────────────────────────────────────────────────────
 echo "── Configuring nginx ────────────────────────────────────"
 sudo cp "$APP_DIR/deploy/nginx.conf" /etc/nginx/sites-available/aqi-api
 sudo ln -sf /etc/nginx/sites-available/aqi-api /etc/nginx/sites-enabled/aqi-api
@@ -62,10 +63,9 @@ sudo nginx -t
 sudo systemctl enable nginx
 sudo systemctl restart nginx
 
-# ── 7. systemd service ────────────────────────────────────────────────────────
+# ── 6. systemd service (manages docker compose lifecycle) ────────────────────
 echo "── Installing systemd service ───────────────────────────"
 sudo cp "$APP_DIR/deploy/aqi-api.service" /etc/systemd/system/aqi-api.service
-# Substitute placeholder tokens with real paths/username
 sudo sed -i "s|__USER__|$USER|g"       /etc/systemd/system/aqi-api.service
 sudo sed -i "s|__APP_DIR__|$APP_DIR|g" /etc/systemd/system/aqi-api.service
 sudo systemctl daemon-reload
@@ -78,11 +78,14 @@ echo "  Setup complete!"
 echo ""
 echo "  Next steps:"
 echo "    1. nano $APP_DIR/.env          ← add OWM_API_KEY, AWS credentials"
-echo "    2. sudo systemctl start aqi-api"
-echo "    3. curl http://localhost:8000/health"
+echo "    2. newgrp docker               ← activate docker group in current shell"
+echo "    3. cd $APP_DIR && docker compose build"
+echo "    4. sudo systemctl start aqi-api"
+echo "    5. curl http://localhost:8000/health"
 echo ""
 echo "  Useful commands:"
 echo "    sudo systemctl status aqi-api"
 echo "    sudo journalctl -u aqi-api -f"
+echo "    docker compose logs -f"
 echo "    sudo systemctl status nginx"
 echo "════════════════════════════════════════════════════════"

@@ -1,22 +1,15 @@
 [Unit]
-Description=AQI MLOps — FastAPI Prediction Service
-After=network.target
+Description=AQI MLOps — FastAPI via Docker Compose
+After=network.target docker.service
+Requires=docker.service
 StartLimitIntervalSec=60
 StartLimitBurst=3
 
 [Service]
 User=__USER__
-Group=__USER__
 WorkingDirectory=__APP_DIR__
-EnvironmentFile=__APP_DIR__/.env
-
-# uvicorn bound to localhost only — nginx handles public traffic
-ExecStart=__APP_DIR__/.venv/bin/uvicorn app.main:app \
-    --host 127.0.0.1 \
-    --port 8000 \
-    --workers 1 \
-    --log-level info
-
+ExecStart=/usr/bin/docker compose up
+ExecStop=/usr/bin/docker compose down
 Restart=on-failure
 RestartSec=10s
 StandardOutput=journal

@@ -19,7 +19,6 @@ data/
 
 # uv
 .uv/
-uv.lock
 
 # Notebooks / experiments
 experiement/

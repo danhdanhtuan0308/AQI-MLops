@@ -46,15 +46,17 @@ jobs:
             set -euo pipefail
             cd ~/AQI-MLops
 
-            echo "── Pulling latest code ──────────────────────────────"
-            git pull origin main
+            echo "── Syncing code (hard reset — always matches main) ──"
+            git fetch origin main
+            git reset --hard origin/main
+            git clean -fd
 
-            echo "── Installing / updating dependencies ───────────────"
-            uv sync
+            echo "── Building Docker image ─────────────────────────────"
+            docker compose build
 
-            echo "── Restarting API service ────────────────────────────"
-            sudo systemctl restart aqi-api
-            sleep 6
+            echo "── Starting container ────────────────────────────────"
+            docker compose up -d
+            sleep 8
 
             echo "── Health check ──────────────────────────────────────"
             STATUS=$(curl -sf http://localhost:8000/health \
@@ -65,7 +67,7 @@ jobs:
               echo "✓ Deploy successful — API is healthy"
             else
               echo "✗ Health check failed"
-              sudo systemctl status aqi-api --no-pager -l
+              docker compose logs --tail=50
               exit 1
             fi
           ENDSSH
