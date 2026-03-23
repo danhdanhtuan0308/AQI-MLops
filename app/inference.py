@@ -266,7 +266,7 @@ def batch_predict(
             current = None
 
         results.append({
-            "timestamp":   str(row_curr["timestamp"]),
+            "timestamp":   str(row_next["timestamp"]),  # T+1: the hour being predicted
             "predicted":   int(pred),
             "actual":      actual,
             "current_aqi": current,
