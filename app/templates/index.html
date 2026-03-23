@@ -803,17 +803,18 @@
         const predicted = this.history.map(r => r.predicted)
         const actual    = this.history.map(r => r.actual)   // null for forecast point
 
-        // Per-point styling — gold star for the T+1 forecast point, teal dot for current
+        // Per-point styling — keep forecast on blue predicted line, current on orange actual line
         const isFC       = i => this.history[i]?.is_forecast === true
         const isCurr     = i => this.history[i]?.is_current  === true
-        const ptRadius   = this.history.map((_, i) => isFC(i) ? 7 : 2)
-        const ptBg       = this.history.map((_, i) => isFC(i) ? '#fbbf24' : 'rgba(96,165,250,0.8)')
-        const ptBorder   = this.history.map((_, i) => isFC(i) ? '#fbbf24' : '#60a5fa')
-        const ptHoverR   = this.history.map((_, i) => isFC(i) ? 9 : 5)
-        // Actual-line point styling: highlight current reading
+        // Predicted line: forecast point is a larger blue dot (same color as line)
+        const ptRadius   = this.history.map((_, i) => isFC(i) ? 6 : 2)
+        const ptBg       = this.history.map((_, i) => 'rgba(96,165,250,0.9)')
+        const ptBorder   = this.history.map((_, i) => '#60a5fa')
+        const ptHoverR   = this.history.map((_, i) => isFC(i) ? 8 : 5)
+        // Actual line: current reading is a larger orange dot (same color as line)
         const actRadius  = this.history.map((_, i) => isCurr(i) ? 6 : 2)
-        const actBg      = this.history.map((_, i) => isCurr(i) ? '#34d399' : 'rgba(251,146,60,0.8)')
-        const actBorder  = this.history.map((_, i) => isCurr(i) ? '#34d399' : '#fb923c')
+        const actBg      = this.history.map((_, i) => 'rgba(251,146,60,0.9)')
+        const actBorder  = this.history.map((_, i) => '#fb923c')
 
         // Defensive destroy: use Chart.js registry so stale references never block canvas reuse
         const prev2 = Chart.getChart('historyChart'); if (prev2) prev2.destroy()
@@ -835,6 +836,10 @@
                 pointHoverRadius:     ptHoverR,
                 fill:                 true,
                 borderWidth:          2,
+                // Dashed segment from last history point → forecast point
+                segment: {
+                  borderDash: ctx => isFC(ctx.p1DataIndex) ? [5, 4] : undefined,
+                },
               },
               {
                 label:                'Actual',
