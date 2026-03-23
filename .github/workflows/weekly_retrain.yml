@@ -66,9 +66,9 @@ jobs:
         run: |
           uv run python - <<'EOF'
           import numpy as np
-          from app.inference import load_artifacts
+          from app.inference import FEATURES, load_artifacts
           model, median = load_artifacts()
-          X = np.zeros((1, 12), dtype="float32")
+          X = np.zeros((1, len(FEATURES)), dtype="float32")
           proba = model.predict_proba(X)
           assert proba.shape == (1, 5), f"Bad proba shape: {proba.shape}"
           assert abs(proba.sum() - 1.0) < 1e-3, f"Probs don't sum to 1: {proba.sum()}"
