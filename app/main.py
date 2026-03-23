@@ -358,7 +358,7 @@ def city_metrics(
         y_true, y_pred, labels=labels, zero_division=0
     )
 
-    return {
+    metrics_payload = {
         "city":          KNOWN_CITIES[slug]["name"],
         "window_hours":  hours,
         "n_predictions": len(valid),
