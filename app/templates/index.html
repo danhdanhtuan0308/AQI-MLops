@@ -658,6 +658,35 @@
           this.cityTimezone = this.prediction?.timezone || 'UTC'
           this.history      = await histRes.json()
 
+          // ── Bridge the gap: insert as_of row if not already in history ──
+          // batch_predict stops at rows[-2], so history ends 1 hr before as_of.
+          // We add the current reading (as_of) so the chart reads:
+          //   ..., 7:15 (predicted+actual), 8:24 (current actual), 9:24 (forecast)
+          if (this.prediction?.as_of && this.prediction?.current_aqi) {
+            const rawAsOf = this.prediction.as_of
+            const asOfTs  = rawAsOf.endsWith('Z') || rawAsOf.includes('+') ? rawAsOf : rawAsOf + 'Z'
+            const asOfMs  = new Date(asOfTs).getTime()
+            const lastHistMs = this.history.length
+              ? new Date(
+                  this.history[this.history.length - 1].timestamp.endsWith('Z')
+                  ? this.history[this.history.length - 1].timestamp
+                  : this.history[this.history.length - 1].timestamp + 'Z'
+                ).getTime()
+              : 0
+            // Only insert if as_of is strictly after the last history point
+            if (asOfMs > lastHistMs) {
+              this.history = [
+                ...this.history,
+                {
+                  timestamp:  asOfTs,
+                  predicted:  null,
+                  actual:     this.prediction.current_aqi,
+                  is_current: true,
+                },
+              ]
+            }
+          }
+
           // ── Append T+1 forecast point (no actual yet) ─────────────────
           // Use forecast_for from the API (as_of + 1 hr) so the chart point
           // lands at the hour being predicted, not the hour data was collected.
@@ -774,12 +803,17 @@
         const predicted = this.history.map(r => r.predicted)
         const actual    = this.history.map(r => r.actual)   // null for forecast point
 
-        // Per-point styling — gold star for the T+1 forecast point
+        // Per-point styling — gold star for the T+1 forecast point, teal dot for current
         const isFC       = i => this.history[i]?.is_forecast === true
+        const isCurr     = i => this.history[i]?.is_current  === true
         const ptRadius   = this.history.map((_, i) => isFC(i) ? 7 : 2)
         const ptBg       = this.history.map((_, i) => isFC(i) ? '#fbbf24' : 'rgba(96,165,250,0.8)')
         const ptBorder   = this.history.map((_, i) => isFC(i) ? '#fbbf24' : '#60a5fa')
         const ptHoverR   = this.history.map((_, i) => isFC(i) ? 9 : 5)
+        // Actual-line point styling: highlight current reading
+        const actRadius  = this.history.map((_, i) => isCurr(i) ? 6 : 2)
+        const actBg      = this.history.map((_, i) => isCurr(i) ? '#34d399' : 'rgba(251,146,60,0.8)')
+        const actBorder  = this.history.map((_, i) => isCurr(i) ? '#34d399' : '#fb923c')
 
         // Defensive destroy: use Chart.js registry so stale references never block canvas reuse
         const prev2 = Chart.getChart('historyChart'); if (prev2) prev2.destroy()
@@ -803,16 +837,18 @@
                 borderWidth:          2,
               },
               {
-                label:           'Actual',
-                data:            actual,
-                borderColor:     '#fb923c',
-                backgroundColor: 'rgba(251,146,60,0.08)',
-                tension:         0.35,
-                pointRadius:     2,
-                pointHoverRadius:5,
-                fill:            false,
-                borderWidth:     2,
-                borderDash:      [4, 3],
+                label:                'Actual',
+                data:                 actual,
+                borderColor:          '#fb923c',
+                backgroundColor:      'rgba(251,146,60,0.08)',
+                tension:              0.35,
+                pointRadius:          actRadius,
+                pointBackgroundColor: actBg,
+                pointBorderColor:     actBorder,
+                pointHoverRadius:     5,
+                fill:                 false,
+                borderWidth:          2,
+                borderDash:           [4, 3],
               },
             ],
           },
@@ -828,9 +864,9 @@
                 callbacks: {
                   title: items => {
                     const i = items[0]?.dataIndex
-                    return isFC(i)
-                      ? items[0].label + '  ← Next-hour forecast'
-                      : items[0].label
+                    if (isFC(i))   return items[0].label + '  ← Next-hour forecast'
+                    if (isCurr(i)) return items[0].label + '  ← Current reading'
+                    return items[0].label
                   },
                   label: ctx => {
                     const v = ctx.raw
