@@ -55,7 +55,7 @@ jobs:
             docker compose build
 
             echo "── Starting container ────────────────────────────────"
-            docker compose up -d
+            docker compose up -d --force-recreate --remove-orphans
             sleep 20
 
             echo "── Ensure model artifact exists (retrain if missing) ──"
