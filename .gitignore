@@ -33,3 +33,8 @@ Thumbs.db
 
 
 ml/mlruns
+
+# Model registry artifacts — trained on EC2, never stored in git.
+# The host bind-mount keeps them safe across deploys.
+ml/model-registry/*.ubj
+ml/model-registry/*.json

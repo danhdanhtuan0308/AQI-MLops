@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - "app/**"
-      - "ml/model-registry/**"
+      - "ml/**"
       - "pyproject.toml"
       - "uv.lock"
   workflow_dispatch:
@@ -57,6 +57,16 @@ jobs:
             echo "── Starting container ────────────────────────────────"
             docker compose up -d
             sleep 20
+
+            echo "── Ensure model artifact exists (retrain if missing) ──"
+            if [ ! -f ~/AQI-MLops/ml/model-registry/model.ubj ]; then
+              echo "model.ubj not found — running initial training on EC2…"
+              source ~/AQI-MLops/.venv/bin/activate
+              python ~/AQI-MLops/ml/train.py
+              echo "Training complete."
+            else
+              echo "model.ubj present — skipping retrain."
+            fi
 
             echo "── Health check ──────────────────────────────────────"
             STATUS=$(curl -sf http://localhost:8000/health \
