@@ -15,11 +15,13 @@ Run
 from __future__ import annotations
 
 import datetime
+import json
 import os
 from pathlib import Path
 
 import boto3
 import pandas as pd
+import redis as redis_lib
 import yaml
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
@@ -52,14 +54,56 @@ KNOWN_CITIES: dict[str, dict] = {
 # ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI(title="AQI Prediction API", version="1.0")
 
-_model = None
+_model  = None
 _median: dict = {}
+_redis: "redis_lib.Redis | None" = None
+
+CACHE_TTL = 18_000  # 5 hours — matches hourly data cadence with buffer
+
+
+def _cache_get(key: str):
+    if _redis is None:
+        return None
+    try:
+        val = _redis.get(key)
+        return json.loads(val) if val else None
+    except Exception:
+        return None
+
+
+def _cache_set(key: str, value) -> None:
+    if _redis is None:
+        return
+    try:
+        _redis.setex(key, CACHE_TTL, json.dumps(value, default=str))
+    except Exception:
+        pass
+
+
+def _cache_clear(pattern: str = "aqi:*") -> None:
+    if _redis is None:
+        return
+    try:
+        keys = list(_redis.scan_iter(pattern))
+        if keys:
+            _redis.delete(*keys)
+    except Exception:
+        pass
 
 
 @app.on_event("startup")
 def _startup() -> None:
-    global _model, _median
+    global _model, _median, _redis
     _model, _median = load_artifacts()
+    redis_url = os.environ.get("REDIS_URL", "")
+    if redis_url:
+        try:
+            _redis = redis_lib.Redis.from_url(
+                redis_url, decode_responses=True, socket_connect_timeout=2
+            )
+            _redis.ping()
+        except Exception:
+            _redis = None
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -104,8 +148,14 @@ def predict_city(city_slug: str) -> dict:
     """
     Fetches the two most recent rows for the city from Athena, builds
     the lag features, and returns the predicted AQI class for T+1.
+    Result is cached in Redis for 5 hours (data only updates hourly).
     """
-    slug = _validate_city(city_slug)
+    slug      = _validate_city(city_slug)
+    cache_key = f"aqi:predict:{slug}"
+    cached    = _cache_get(cache_key)
+    if cached:
+        return cached
+
     df = _athena(f"""
         SELECT timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
         FROM aqi_db.aqi_unified
@@ -123,34 +173,41 @@ def predict_city(city_slug: str) -> dict:
     X      = build_feature_vector(rows[0], rows[1], _median)
     result = predict_single(_model, X)
 
-    current_aqi = int(rows[1]["aqi"])
+    current_aqi  = int(rows[1]["aqi"])
     as_of_ts     = pd.Timestamp(rows[1]["timestamp"])
     forecast_for = as_of_ts + pd.Timedelta(hours=1)
-    return {
+    payload = {
         "city":          KNOWN_CITIES[slug]["name"],
         "city_slug":     slug,
         "timezone":      CITY_TIMEZONES.get(slug, "UTC"),
         "as_of":         str(as_of_ts),
-        "forecast_for":  str(forecast_for),  # timestamp this prediction is FOR (as_of + 1 hr)
+        "forecast_for":  str(forecast_for),
         "current_aqi":   current_aqi,
         "current_label": AQI_META.get(current_aqi, {}).get("label", "—"),
         "current_color": AQI_META.get(current_aqi, {}).get("color", "#ccc"),
         "next_hour":     result,
     }
+    _cache_set(cache_key, payload)
+    return payload
 
 
 @app.get("/history/{city_slug}", summary="Predicted vs actual AQI history")
 def city_history(
     city_slug: str,
-    hours: int = Query(default=48, ge=1, le=4320, description="Look-back window in hours (max 4320 = 6 months)"),
+    hours: int = Query(default=48, ge=1, le=720, description="Look-back window in hours (max 720 = 1 month)"),
 ) -> list[dict]:
     """
     Returns a time-ordered list of {timestamp, predicted, actual, current_aqi}.
     `actual` is the ground-truth AQI for the hour after `timestamp`.
+    Result is cached in Redis for 5 hours.
     """
-    slug  = _validate_city(city_slug)
-    fetch = hours + 2   # extra rows needed for lag computation
+    slug      = _validate_city(city_slug)
+    cache_key = f"aqi:history:{slug}:{hours}"
+    cached    = _cache_get(cache_key)
+    if cached:
+        return cached
 
+    fetch = hours + 2   # extra rows needed for lag computation
     df = _athena(f"""
         SELECT timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
         FROM aqi_db.aqi_unified
@@ -160,8 +217,10 @@ def city_history(
     """)
     df = df.sort_values("timestamp").reset_index(drop=True)
     df["aqi"] = pd.to_numeric(df["aqi"], errors="coerce").clip(upper=5)
-    rows = df.to_dict("records")
-    return batch_predict(_model, _median, rows)
+    rows   = df.to_dict("records")
+    result = batch_predict(_model, _median, rows)
+    _cache_set(cache_key, result)
+    return result
 
 
 @app.get("/drift/{city_slug}", summary="Rolling weekly drift: current 7 days vs prior 7 days")
@@ -178,7 +237,11 @@ def city_drift(city_slug: str) -> dict:
     Retrain with ``python ml/train.py --lookback-weeks N`` when |z| > 1.0
     or the AQI distribution has shifted significantly.
     """
-    slug = _validate_city(city_slug)
+    slug      = _validate_city(city_slug)
+    cache_key = f"aqi:drift:{slug}"
+    cached    = _cache_get(cache_key)
+    if cached:
+        return cached
 
     df = _athena(f"""
         SELECT timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
@@ -229,7 +292,7 @@ def city_drift(city_slug: str) -> dict:
         for cls in [1, 2, 3, 4, 5]
     }
 
-    return {
+    drift_payload = {
         "city":             KNOWN_CITIES[slug]["name"],
         "timezone":         CITY_TIMEZONES.get(slug, "UTC"),
         "ref_rows":         len(ref_df),
@@ -239,6 +302,8 @@ def city_drift(city_slug: str) -> dict:
         "features":         features_out,
         "aqi_distribution": aqi_dist,
     }
+    _cache_set(cache_key, drift_payload)
+    return drift_payload
 
 
 @app.get("/metrics/{city_slug}", summary="Online F1 / Precision / Recall from recent production data")
@@ -252,9 +317,13 @@ def city_metrics(
     Pure online / production data — the training set is never touched.
     Requires >= 10 rows with known actuals.
     """
-    slug  = _validate_city(city_slug)
-    limit = hours + 2
+    slug      = _validate_city(city_slug)
+    cache_key = f"aqi:metrics:{slug}:{hours}"
+    cached    = _cache_get(cache_key)
+    if cached:
+        return cached
 
+    limit = hours + 2
     df = _athena(f"""
         SELECT timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
         FROM aqi_db.aqi_unified
@@ -309,17 +378,37 @@ def city_metrics(
         },
         "computed_at": datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     }
+    _cache_set(cache_key, metrics_payload)
+    return metrics_payload
 
 
 @app.post("/reload-model", summary="Hot-reload model artifacts without restarting the server")
 def reload_model() -> dict:
     """
     Re-reads model.ubj and median.json from ml/model-registry/ into memory.
-    Call this after running `python ml/train.py` to apply the new model immediately.
+    Also flushes all Redis cache keys so the new model's predictions are served immediately.
     """
     global _model, _median
     _model, _median = load_artifacts()
+    _cache_clear("aqi:*")  # invalidate all cached predictions/history
     return {"status": "ok", "message": "Model reloaded successfully"}
+
+
+@app.get("/cache/status", summary="Redis cache info (ops use)")
+def cache_status() -> dict:
+    if _redis is None:
+        return {"redis": "disabled", "reason": "REDIS_URL not set or connection failed"}
+    try:
+        info = _redis.info("memory")
+        keys = _redis.dbsize()
+        return {
+            "redis":       "connected",
+            "keys":        keys,
+            "used_memory": info.get("used_memory_human", "?"),
+            "ttl_seconds": CACHE_TTL,
+        }
+    except Exception as e:
+        return {"redis": "error", "detail": str(e)}
 
 
 @app.get("/health", summary="System and model metadata (no Athena)")

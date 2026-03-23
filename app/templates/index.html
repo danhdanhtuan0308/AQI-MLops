@@ -59,12 +59,11 @@
                   class="rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-700"
                   style="background:#161d33">
             <option value="24">Last 24 h</option>
+            <!-- 6-month option removed: too slow even with Redis -->
             <option value="48" selected>Last 48 h</option>
             <option value="72">Last 72 h</option>
             <option value="168">Last 7 days</option>
             <option value="720">Last 1 month</option>
-            <option value="1440">Last 2 months</option>
-            <option value="4320">Last 6 months</option>
           </select>
         </div>
 
