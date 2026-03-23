@@ -659,15 +659,15 @@
           this.history      = await histRes.json()
 
           // ── Append T+1 forecast point (no actual yet) ─────────────────
-          if (this.prediction?.next_hour && this.history.length) {
-            const lastTs  = this.history[this.history.length - 1].timestamp
-            const lastMs  = new Date(
-              lastTs.endsWith('Z') || lastTs.includes('+') ? lastTs : lastTs + 'Z'
-            ).getTime()
+          // Use forecast_for from the API (as_of + 1 hr) so the chart point
+          // lands at the hour being predicted, not the hour data was collected.
+          if (this.prediction?.next_hour && this.prediction?.forecast_for) {
+            const raw = this.prediction.forecast_for
+            const ts  = raw.endsWith('Z') || raw.includes('+') ? raw : raw + 'Z'
             this.history = [
               ...this.history,
               {
-                timestamp:   new Date(lastMs + 3_600_000).toISOString(),
+                timestamp:   ts,
                 predicted:   this.prediction.next_hour.predicted_aqi,
                 actual:      null,
                 is_forecast: true,

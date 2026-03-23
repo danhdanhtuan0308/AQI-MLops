@@ -124,11 +124,14 @@ def predict_city(city_slug: str) -> dict:
     result = predict_single(_model, X)
 
     current_aqi = int(rows[1]["aqi"])
+    as_of_ts     = pd.Timestamp(rows[1]["timestamp"])
+    forecast_for = as_of_ts + pd.Timedelta(hours=1)
     return {
         "city":          KNOWN_CITIES[slug]["name"],
         "city_slug":     slug,
         "timezone":      CITY_TIMEZONES.get(slug, "UTC"),
-        "as_of":         str(rows[1]["timestamp"]),
+        "as_of":         str(as_of_ts),
+        "forecast_for":  str(forecast_for),  # timestamp this prediction is FOR (as_of + 1 hr)
         "current_aqi":   current_aqi,
         "current_label": AQI_META.get(current_aqi, {}).get("label", "—"),
         "current_color": AQI_META.get(current_aqi, {}).get("color", "#ccc"),

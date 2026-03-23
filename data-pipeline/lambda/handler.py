@@ -19,6 +19,10 @@ S3_BUCKET    = os.environ.get("S3_BUCKET",    "weather-bulk")
 S3_PREFIX    = os.environ.get("S3_PREFIX",    "hourly")
 SLEEP_SEC    = float(os.environ.get("SLEEP_SEC", "0.2"))
 MERGE_LAMBDA = os.environ.get("MERGE_LAMBDA", "aqi-iceberg-merge")
+# Optional: EC2 FastAPI URL — when set, Lambda triggers /predict for every city
+# after data is written so the next-hour forecast is ready immediately.
+# Example: http://3.94.115.44
+PREDICT_API_URL = os.environ.get("PREDICT_API_URL", "").rstrip("/")
 AQI_URL      = "http://api.openweathermap.org/data/2.5/air_pollution"
 
 # 99 cities inline — mirrors config.yaml
@@ -140,5 +144,27 @@ def handler(event, context):
         Payload=json.dumps({"s3_key": key}).encode(),
     )
     log.info("Triggered %s with key=%s", MERGE_LAMBDA, key)
+
+    # ── Warm the inference API immediately after data lands ──────────────────
+    # The Iceberg merge is async; we wait briefly so Athena sees the new rows
+    # before we hit /predict.  Adjust PREDICT_WAIT_SEC (default 30) if needed.
+    if PREDICT_API_URL:
+        wait_sec = float(os.environ.get("PREDICT_WAIT_SEC", "30"))
+        log.info("Waiting %.0fs for Iceberg merge before triggering inference…", wait_sec)
+        time.sleep(wait_sec)
+
+        slugs = [c[1] for c in CITIES]
+        ok = 0
+        for slug in slugs:
+            try:
+                r = requests.get(
+                    f"{PREDICT_API_URL}/predict/{slug}",
+                    timeout=15,
+                )
+                r.raise_for_status()
+                ok += 1
+            except Exception as e:
+                log.warning("Inference warm-up failed for %s: %s", slug, e)
+        log.info("Inference warm-up done: %d/%d cities OK", ok, len(slugs))
 
     return {"statusCode": 200, "body": json.dumps({"cities": len(df), "key": key})}
