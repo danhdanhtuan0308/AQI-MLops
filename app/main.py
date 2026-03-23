@@ -58,7 +58,7 @@ _model  = None
 _median: dict = {}
 _redis: "redis_lib.Redis | None" = None
 
-CACHE_TTL = 18_000  # 5 hours — matches hourly data cadence with buffer
+CACHE_TTL = 7_200   # 2 hours — safety net; Redis is proactively refreshed every hour by Lambda B via /warm-cache
 
 
 def _cache_get(key: str):
@@ -380,6 +380,68 @@ def city_metrics(
     }
     _cache_set(cache_key, metrics_payload)
     return metrics_payload
+
+
+@app.post("/warm-cache", summary="Bulk-load 1-month history for all cities into Redis (called by Lambda B after each hourly merge)")
+def warm_cache() -> dict:
+    """
+    Single Athena query for ALL cities (last 722 hours) → batch_predict per city
+    → populate Redis for history (24h/48h/168h/720h windows) and predict.
+    Called automatically by Lambda B after each hourly MERGE so the dashboard
+    is always served from Redis, never from on-demand Athena queries.
+    """
+    if _redis is None:
+        return {"status": "skipped", "reason": "Redis not connected"}
+
+    df = _athena("""
+        SELECT timestamp, city_slug, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
+        FROM aqi_db.aqi_unified
+        WHERE timestamp >= current_timestamp - interval '722' hour
+        ORDER BY city_slug, timestamp ASC
+    """)
+    df["aqi"] = pd.to_numeric(df["aqi"], errors="coerce").clip(upper=5)
+
+    cached, skipped = [], []
+    for slug, city_df in df.groupby("city_slug"):
+        if slug not in KNOWN_CITIES:
+            continue
+        rows = city_df.sort_values("timestamp").to_dict("records")
+
+        # Pre-populate all common history windows
+        if len(rows) >= 3:
+            history = batch_predict(_model, _median, rows)
+            for h in (24, 48, 168, 720):
+                window = history[-h:] if len(history) > h else history
+                _cache_set(f"aqi:history:{slug}:{h}", window)
+
+        # Pre-populate predict
+        if len(rows) >= 2:
+            X = build_feature_vector(rows[-2], rows[-1], _median)
+            result = predict_single(_model, X)
+            current_aqi = max(1, min(5, int(float(rows[-1]["aqi"] or 1))))
+            as_of_ts    = pd.Timestamp(rows[-1]["timestamp"])
+            payload = {
+                "city":          KNOWN_CITIES[slug]["name"],
+                "city_slug":     slug,
+                "timezone":      CITY_TIMEZONES.get(slug, "UTC"),
+                "as_of":         str(as_of_ts),
+                "forecast_for":  str(as_of_ts + pd.Timedelta(hours=1)),
+                "current_aqi":   current_aqi,
+                "current_label": AQI_META.get(current_aqi, {}).get("label", "—"),
+                "current_color": AQI_META.get(current_aqi, {}).get("color", "#ccc"),
+                "next_hour":     result,
+            }
+            _cache_set(f"aqi:predict:{slug}", payload)
+            cached.append(slug)
+        else:
+            skipped.append(slug)
+
+    return {
+        "status":        "ok",
+        "cities_cached": len(cached),
+        "cities_skipped": len(skipped),
+        "rows_fetched":  len(df),
+    }
 
 
 @app.post("/reload-model", summary="Hot-reload model artifacts without restarting the server")

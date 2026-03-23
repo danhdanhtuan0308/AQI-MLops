@@ -128,6 +128,22 @@ def handler(event, context):
     state = wait_query(exec_id)
     log.info("Athena query %s → %s", exec_id, state)
 
+    # Proactively warm Redis cache — one bulk Athena query for all cities
+    predict_url = os.environ.get("PREDICT_API_URL", "").rstrip("/")
+    if predict_url and state == "SUCCEEDED":
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                f"{predict_url}/warm-cache",
+                method="POST",
+                headers={"Content-Type": "application/json"},
+                data=b"{}",
+            )
+            urllib.request.urlopen(req, timeout=10)
+            log.info("Cache warm triggered at %s/warm-cache", predict_url)
+        except Exception as e:
+            log.warning("Cache warm failed (non-fatal): %s", e)
+
     return {
         "statusCode": 200 if state == "SUCCEEDED" else 500,
         "body": json.dumps({"state": state, "execution_id": exec_id, "s3_key": s3_key}),
