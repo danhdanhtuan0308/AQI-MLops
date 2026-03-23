@@ -432,6 +432,19 @@ def warm_cache() -> dict:
                 "next_hour":     result,
             }
             _cache_set(f"aqi:predict:{slug}", payload)
+            # Push to prediction buffer for Lambda C to flush to S3
+            if _redis is not None:
+                try:
+                    record = json.dumps({
+                        "city_slug":    slug,
+                        "as_of":        str(as_of_ts),
+                        "forecast_for": str(as_of_ts + pd.Timedelta(hours=1)),
+                        "predicted":    result["predicted_aqi"],
+                        "confidence":   result["probabilities"][str(result["predicted_aqi"])],
+                    }, default=str)
+                    _redis.rpush("aqi:pred_buffer", record)
+                except Exception:
+                    pass
             cached.append(slug)
         else:
             skipped.append(slug)

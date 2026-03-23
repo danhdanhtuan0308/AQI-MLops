@@ -103,6 +103,20 @@ TBLPROPERTIES ('table_type'='ICEBERG','format'='parquet','write_compression'='sn
 EOF
 )" "create aqi_unified Iceberg table"
 
+athena_run "$(cat <<'EOF'
+CREATE TABLE IF NOT EXISTS aqi_db.predictions (
+  forecast_for TIMESTAMP,
+  city_slug    STRING,
+  predicted    INT,
+  confidence   DOUBLE,
+  as_of        TIMESTAMP
+)
+PARTITIONED BY (month(forecast_for))
+LOCATION 's3://weather-bulk/predictions/'
+TBLPROPERTIES ('table_type'='ICEBERG','format'='parquet','write_compression'='snappy')
+EOF
+)" "create predictions Iceberg table"
+
 echo "── Athena setup complete"
 
 # 3. IAM role for Lambda B
@@ -182,6 +196,68 @@ aws iam put-role-policy --role-name "$ROLE_A" \
         \"Resource\":\"arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:${LAMBDA_B}\"}]
     }"
 
+# 6. deploy Lambda C (prediction flush: Redis pred_buffer → S3 Parquet → Athena predictions)
+LAMBDA_C="aqi-prediction-flush"
+BUILD_C="/tmp/aqi-flush-build"
+ZIP_C="/tmp/aqi-flush.zip"
+
+echo "── Building Lambda C package..."
+rm -rf "$BUILD_C" && mkdir -p "$BUILD_C"
+cp lakehouse/prediction_flush_handler.py "$BUILD_C/handler.py"
+# install runtime deps (redis + pyarrow) into package directory
+pip install --quiet --target "$BUILD_C" redis pyarrow
+cd "$BUILD_C" && zip -r "$ZIP_C" . > /dev/null && cd - > /dev/null
+echo "   Package: $ZIP_C ($(du -sh $ZIP_C | cut -f1))"
+
+ENV_C="Variables={S3_BUCKET=${S3_BUCKET},ATHENA_DB=aqi_db,ATHENA_RESULTS=${ATHENA_RESULTS}}"
+# REDIS_URL must be set separately in the Lambda console (contains credentials)
+
+if aws lambda get-function --function-name "$LAMBDA_C" --region "$REGION" &>/dev/null; then
+    echo "── Updating Lambda C..."
+    aws lambda update-function-code --function-name "$LAMBDA_C" \
+        --zip-file "fileb://$ZIP_C" --region "$REGION" > /dev/null
+    aws lambda wait function-updated --function-name "$LAMBDA_C" --region "$REGION"
+    aws lambda update-function-configuration --function-name "$LAMBDA_C" \
+        --environment "$ENV_C" --region "$REGION" > /dev/null
+else
+    echo "── Creating Lambda C: $LAMBDA_C..."
+    # Lambda C reuses Lambda B's IAM role (same S3 + Athena permissions)
+    aws lambda create-function \
+        --function-name "$LAMBDA_C" \
+        --runtime python3.12 \
+        --role "$ROLE_B_ARN" \
+        --handler "handler.handler" \
+        --zip-file "fileb://$ZIP_C" \
+        --timeout 300 \
+        --memory-size 512 \
+        --environment "$ENV_C" \
+        --region "$REGION" > /dev/null
+    aws lambda wait function-active --function-name "$LAMBDA_C" --region "$REGION"
+
+    # EventBridge rule: hourly at :05 (5 min after Lambda A runs at :00)
+    RULE_ARN=$(aws events put-rule \
+        --name "aqi-prediction-flush-hourly" \
+        --schedule-expression "cron(5 * * * ? *)" \
+        --state ENABLED \
+        --region "$REGION" \
+        --query RuleArn --output text)
+    LAMBDA_C_ARN="arn:aws:lambda:${REGION}:${ACCOUNT_ID}:function:${LAMBDA_C}"
+    aws lambda add-permission \
+        --function-name "$LAMBDA_C" \
+        --statement-id "allow-eventbridge-flush" \
+        --action "lambda:InvokeFunction" \
+        --principal events.amazonaws.com \
+        --source-arn "$RULE_ARN" \
+        --region "$REGION" > /dev/null
+    aws events put-targets \
+        --rule "aqi-prediction-flush-hourly" \
+        --targets "Id=lambda-c,Arn=${LAMBDA_C_ARN}" \
+        --region "$REGION" > /dev/null
+    echo "   EventBridge rule created: cron(5 * * * ? *)"
+fi
+echo "   ✅ Lambda C ready"
+echo "   ⚠️  Remember: set REDIS_URL env var on Lambda C in the AWS console"
+
 echo ""
 echo "✅ Lakehouse deployment complete!"
 echo ""
@@ -190,6 +266,9 @@ echo "   uv run python lakehouse/backfill.py"
 echo ""
 echo "── From now on, every hour Lambda A writes hourly file → invokes Lambda B"
 echo "   → MERGE INTO aqi_db.aqi_unified (only 99 rows scanned)"
+echo "   → POST /warm-cache → FastAPI predicts all 99 cities → Redis"
+echo "   → Lambda C at :05 flushes Redis pred_buffer → S3 → aqi_db.predictions"
 echo ""
-echo "── Query your unified table in Athena:"
-echo "   SELECT source, COUNT(*) FROM aqi_db.aqi_unified GROUP BY source;"
+echo "── Query your predictions table in Athena:"
+echo "   SELECT city_slug, forecast_for, predicted, confidence, as_of"
+echo "   FROM aqi_db.predictions ORDER BY forecast_for DESC LIMIT 20;"

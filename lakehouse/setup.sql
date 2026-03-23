@@ -74,3 +74,20 @@ TBLPROPERTIES (
   'format'            = 'parquet',
   'write_compression' = 'snappy'
 );
+
+
+-- Step 5: Gold — model predictions (written by Lambda C hourly)
+CREATE TABLE IF NOT EXISTS aqi_db.predictions (
+  forecast_for  TIMESTAMP,
+  city_slug     STRING,
+  predicted     INT,
+  confidence    DOUBLE,
+  as_of         TIMESTAMP
+)
+PARTITIONED BY (month(forecast_for))
+LOCATION 's3://weather-bulk/predictions/'
+TBLPROPERTIES (
+  'table_type'        = 'ICEBERG',
+  'format'            = 'parquet',
+  'write_compression' = 'snappy'
+);
