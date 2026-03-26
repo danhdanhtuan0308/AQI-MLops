@@ -223,47 +223,26 @@ def city_history(
     return result
 
 
-@app.get("/drift/{city_slug}", summary="Rolling daily drift: today vs yesterday")
-def city_drift(city_slug: str) -> dict:
+def _build_drift_payload(slug: str, df: pd.DataFrame) -> dict | None:
     """
-    Rolling daily drift monitor.
-
-    Compares the distribution of raw pollutant features between two
-    non-overlapping 24-hour windows:
-      - reference : yesterday (24h → 48h ago)
-      - recent    : today (last 24 hours)
-
-    Returns per-feature z-score drift and AQI class distribution shift.
-    Retrain when |z| > 1.0 or the AQI distribution has shifted significantly.
+    Compute daily drift from a pre-fetched DataFrame covering the last 2 days.
+    Returns the drift payload dict, or None if there is not enough data.
+    `df` must include columns: timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3.
     """
-    slug      = _validate_city(city_slug)
-    cache_key = f"aqi:drift:{slug}"
-    cached    = _cache_get(cache_key)
-    if cached:
-        return cached
-
-    df = _athena(f"""
-        SELECT timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
-        FROM aqi_db.aqi_unified
-        WHERE city_slug = '{slug}'
-          AND timestamp >= current_timestamp - interval '2' day
-        ORDER BY timestamp ASC
-    """)
-    if len(df) < 10:
-        raise HTTPException(422, "Not enough data for drift analysis (need >= 10 rows over the last 2 days)")
-
     df = df.sort_values("timestamp").reset_index(drop=True)
     for col in ["aqi", "co", "no", "no2", "o3", "so2", "pm2_5", "pm10", "nh3"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df["aqi"] = df["aqi"].clip(upper=5)
 
-    # Fixed rolling split: reference = yesterday (48h→24h ago), recent = last 24 hours
+    if len(df) < 10:
+        return None
+
     cutoff    = df["timestamp"].max() - pd.Timedelta(days=1)
     ref_df    = df[df["timestamp"] <  cutoff]
     recent_df = df[df["timestamp"] >= cutoff]
 
     if len(ref_df) < 5 or len(recent_df) < 5:
-        raise HTTPException(422, "One of the 24-hour windows has too few rows for drift analysis")
+        return None
 
     feature_cols = ["aqi", "co", "no", "no2", "o3", "so2", "pm2_5", "pm10", "nh3"]
     features_out: dict = {}
@@ -291,7 +270,7 @@ def city_drift(city_slug: str) -> dict:
         for cls in [1, 2, 3, 4, 5]
     }
 
-    drift_payload = {
+    return {
         "city":             KNOWN_CITIES[slug]["name"],
         "timezone":         CITY_TIMEZONES.get(slug, "UTC"),
         "ref_rows":         len(ref_df),
@@ -301,8 +280,42 @@ def city_drift(city_slug: str) -> dict:
         "features":         features_out,
         "aqi_distribution": aqi_dist,
     }
-    _cache_set(cache_key, drift_payload)
-    return drift_payload
+
+
+@app.get("/drift/{city_slug}", summary="Rolling daily drift: today vs yesterday")
+def city_drift(city_slug: str) -> dict:
+    """
+    Rolling daily drift monitor.
+
+    Compares the distribution of raw pollutant features between two
+    non-overlapping 24-hour windows:
+      - reference : yesterday (24h → 48h ago)
+      - recent    : today (last 24 hours)
+
+    Returns per-feature z-score drift and AQI class distribution shift.
+    Retrain when |z| > 1.0 or the AQI distribution has shifted significantly.
+    Result is served from Redis when pre-loaded by /warm-cache.
+    """
+    slug      = _validate_city(city_slug)
+    cache_key = f"aqi:drift:{slug}"
+    cached    = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    df = _athena(f"""
+        SELECT timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
+        FROM aqi_db.aqi_unified
+        WHERE city_slug = '{slug}'
+          AND timestamp >= current_timestamp - interval '2' day
+        ORDER BY timestamp ASC
+    """)
+
+    payload = _build_drift_payload(slug, df)
+    if payload is None:
+        raise HTTPException(422, "Not enough data for drift analysis (need >= 10 rows and >= 5 per 24-hour window)")
+
+    _cache_set(cache_key, payload)
+    return payload
 
 
 @app.get("/metrics/{city_slug}", summary="Online F1 / Precision / Recall from recent production data")
@@ -447,6 +460,12 @@ def warm_cache() -> dict:
             cached.append(slug)
         else:
             skipped.append(slug)
+
+        # Pre-populate drift (yesterday vs today) from the same already-fetched data
+        drift_df = city_df[city_df["timestamp"] >= city_df["timestamp"].max() - pd.Timedelta(days=2)].copy()
+        drift_payload = _build_drift_payload(slug, drift_df)
+        if drift_payload is not None:
+            _cache_set(f"aqi:drift:{slug}", drift_payload)
 
     return {
         "status":        "ok",
