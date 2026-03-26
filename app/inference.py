@@ -181,13 +181,21 @@ def build_feature_vector(
     hour  = ts.hour  if hasattr(ts, "hour")  else int(str(ts)[11:13])
     month = ts.month if hasattr(ts, "month") else int(str(ts)[5:7])
 
-    pm2_5 = _safe(row_curr.get("pm2_5"), median.get("pm25_ratio", 0))
     pm10  = _safe(row_curr.get("pm10"),  median.get("pm10", 0))
     no2   = _safe(row_curr.get("no2"),   median.get("no2", 0))
     o3    = _safe(row_curr.get("o3"),    median.get("o3", 0))
     so2   = _safe(row_curr.get("so2"),   median.get("so2", 0))
 
-    pm25_ratio = pm2_5 / (pm2_5 + pm10 + no2 + o3 + so2 + 1e-9)
+    # pm25_ratio: precomputed at T from current sensor readings — no future leakage.
+    # median.json has no raw pm2_5 key (only engineered features), so fall back to
+    # the training-set median ratio directly when the pm2_5 sensor reading is unavailable.
+    try:
+        _pm2_5 = float(row_curr["pm2_5"])
+        if np.isnan(_pm2_5):
+            raise ValueError
+        pm25_ratio = round(_pm2_5 / (_pm2_5 + pm10 + no2 + o3 + so2 + 1e-9), 4)
+    except (TypeError, ValueError, KeyError):
+        pm25_ratio = float(median.get("pm25_ratio", 0.1))
 
     feat = {
         "aqi_lag1":   _safe(row_prev.get("aqi"),  median.get("aqi_lag1", 2)),

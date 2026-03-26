@@ -223,16 +223,20 @@ def city_history(
     return result
 
 
-def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1) -> dict | None:
+def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1,
+                         model=None, median=None) -> dict | None:
     """
     Compute drift from a pre-fetched DataFrame.
     `window_days=1` compares today vs yesterday; `window_days=7` compares this week vs prior week.
     `df` must include columns: timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3.
+    Pass `model` and `median` to also compute prediction distribution drift.
     """
     df = df.sort_values("timestamp").reset_index(drop=True)
     for col in ["aqi", "co", "no", "no2", "o3", "so2", "pm2_5", "pm10", "nh3"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df["aqi"] = df["aqi"].clip(upper=5)
+    # Computed feature: pm25_ratio (same formula used at inference time)
+    df["pm25_ratio"] = df["pm2_5"] / (df["pm2_5"] + df["pm10"] + df["no2"] + df["o3"] + df["so2"] + 1e-9)
 
     if len(df) < 10:
         return None
@@ -247,7 +251,7 @@ def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1) -> d
     ref_label    = "yesterday"    if window_days == 1 else "prior 7 days"
     recent_label = "today"        if window_days == 1 else "last 7 days"
 
-    feature_cols = ["aqi", "co", "no", "no2", "o3", "so2", "pm2_5", "pm10", "nh3"]
+    feature_cols = ["aqi", "co", "no", "no2", "o3", "so2", "pm10", "nh3", "pm25_ratio"]
     features_out: dict = {}
     for col in feature_cols:
         ref_v = ref_df[col].dropna()
@@ -276,15 +280,35 @@ def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1) -> d
         for cls in [1, 2, 3, 4, 5]
     }
 
+    # Prediction distribution drift
+    pred_dist = None
+    if model is not None and median is not None:
+        from collections import Counter
+        ref_rows_list = ref_df.sort_values("timestamp").to_dict("records")
+        rec_rows_list = recent_df.sort_values("timestamp").to_dict("records")
+        ref_preds = batch_predict(model, median, ref_rows_list) if len(ref_rows_list) >= 3 else []
+        rec_preds = batch_predict(model, median, rec_rows_list) if len(rec_rows_list) >= 3 else []
+        if ref_preds and rec_preds:
+            ref_counts = Counter(r["predicted"] for r in ref_preds)
+            rec_counts = Counter(r["predicted"] for r in rec_preds)
+            pred_dist = {
+                str(cls): {
+                    "ref_pct":    round(ref_counts.get(cls, 0) / len(ref_preds) * 100, 1),
+                    "recent_pct": round(rec_counts.get(cls, 0) / len(rec_preds) * 100, 1),
+                }
+                for cls in [1, 2, 3, 4, 5]
+            }
+
     return {
-        "city":             KNOWN_CITIES[slug]["name"],
-        "timezone":         CITY_TIMEZONES.get(slug, "UTC"),
-        "ref_rows":         len(ref_df),
-        "recent_rows":      len(recent_df),
-        "ref_window":       f"{ref_df['timestamp'].min()} to {ref_df['timestamp'].max()} ({ref_label})",
-        "recent_window":    f"{recent_df['timestamp'].min()} to {recent_df['timestamp'].max()} ({recent_label})",
-        "features":         features_out,
-        "aqi_distribution": aqi_dist,
+        "city":                    KNOWN_CITIES[slug]["name"],
+        "timezone":                CITY_TIMEZONES.get(slug, "UTC"),
+        "ref_rows":                len(ref_df),
+        "recent_rows":             len(recent_df),
+        "ref_window":              f"{ref_df['timestamp'].min()} to {ref_df['timestamp'].max()} ({ref_label})",
+        "recent_window":           f"{recent_df['timestamp'].min()} to {recent_df['timestamp'].max()} ({recent_label})",
+        "features":                features_out,
+        "aqi_distribution":        aqi_dist,
+        "prediction_distribution": pred_dist,
     }
 
 
@@ -319,7 +343,7 @@ def city_drift(
         ORDER BY timestamp ASC
     """)
 
-    payload = _build_drift_payload(slug, df, window_days=window_days)
+    payload = _build_drift_payload(slug, df, window_days=window_days, model=_model, median=_median)
     if payload is None:
         raise HTTPException(422, "Not enough data for drift analysis (need >= 10 rows and >= 5 rows per window)")
 
@@ -475,7 +499,7 @@ def warm_cache() -> dict:
         for w_days, w_label in [(1, "1d"), (7, "7d")]:
             fetch_days = w_days * 2
             drift_df = city_df[city_df["timestamp"] >= max_ts - pd.Timedelta(days=fetch_days)].copy()
-            drift_payload = _build_drift_payload(slug, drift_df, window_days=w_days)
+            drift_payload = _build_drift_payload(slug, drift_df, window_days=w_days, model=_model, median=_median)
             if drift_payload is not None:
                 _cache_set(f"aqi:drift:{slug}:{w_label}", drift_payload)
 
