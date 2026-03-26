@@ -92,25 +92,25 @@
     </section>
     <!-- ── Tab bar ──────────────────────────────────────────────────────── -->
     <div class="flex border-b border-gray-800">
-      <button @click="activeTab = 'forecast'"
-              :class="activeTab === 'forecast' ? 'border-b-2 border-blue-500 text-white' : 'text-gray-500 hover:text-gray-300'"
+      <button @click="setView('forecast')"
+              :class="activeView === 'forecast' ? 'border-b-2 border-blue-500 text-white' : 'text-gray-500 hover:text-gray-300'"
               class="px-6 py-2.5 text-sm font-semibold transition-colors -mb-px">
         Forecast
       </button>
-      <button @click="activeTab = 'drift'; fetchDrift()"
-              :class="activeTab === 'drift' ? 'border-b-2 border-purple-500 text-white' : 'text-gray-500 hover:text-gray-300'"
+      <button @click="setView('drift')"
+              :class="activeView === 'drift' ? 'border-b-2 border-purple-500 text-white' : 'text-gray-500 hover:text-gray-300'"
               class="px-6 py-2.5 text-sm font-semibold transition-colors -mb-px">
         Data Drift
       </button>
-      <button @click="activeTab = 'system'; fetchMeta(); fetchLiveMetrics()"
-              :class="activeTab === 'system' ? 'border-b-2 border-green-500 text-white' : 'text-gray-500 hover:text-gray-300'"
+      <button @click="setView('metrics')"
+              :class="activeView === 'metrics' ? 'border-b-2 border-green-500 text-white' : 'text-gray-500 hover:text-gray-300'"
               class="px-6 py-2.5 text-sm font-semibold transition-colors -mb-px">
-        System
+        Metrics
       </button>
     </div>
 
     <!-- ── FORECAST TAB ────────────────────────────────────────────────────── -->
-    <div x-show="activeTab === 'forecast'" class="space-y-6">
+    <div x-show="activeView === 'forecast'" class="space-y-6">
     <!-- ── Prediction Cards ───────────────────────────────────────────────── -->
     <div x-show="prediction" x-transition class="grid grid-cols-1 sm:grid-cols-3 gap-4">
 
@@ -197,7 +197,20 @@
     </div><!-- /forecast -->
 
     <!-- ── DATA DRIFT TAB ─────────────────────────────────────────────────── -->
-    <div x-show="activeTab === 'drift'" x-transition class="space-y-6">
+    <div x-show="activeView === 'drift'" x-transition class="space-y-6">
+
+      <!-- Window selector -->
+      <div class="flex items-center gap-3">
+        <span class="text-[11px] text-gray-500 uppercase tracking-wider font-semibold">Window:</span>
+        <div class="flex gap-1">
+          <button @click="driftWindow='1d'; drift=null; fetchDrift()"
+                  :class="driftWindow==='1d' ? 'bg-purple-700 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200'"
+                  class="px-3 py-1 rounded-lg text-xs font-semibold transition-colors">Today vs Yesterday</button>
+          <button @click="driftWindow='7d'; drift=null; fetchDrift()"
+                  :class="driftWindow==='7d' ? 'bg-purple-700 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200'"
+                  class="px-3 py-1 rounded-lg text-xs font-semibold transition-colors">This Week vs Prior Week</button>
+        </div>
+      </div>
 
       <!-- Loading / empty state -->
       <div x-show="driftLoading" class="flex items-center justify-center py-20 text-gray-500 gap-3">
@@ -209,16 +222,16 @@
       </div>
       <div x-show="!drift && !driftLoading"
            class="flex flex-col items-center justify-center py-20 text-gray-700 gap-2">
-        <span class="text-sm">Select a city and click the Data Drift tab to compare today vs yesterday</span>
+        <span class="text-sm">Select a city and click the Data Drift tab to load drift analysis</span>
       </div>
 
       <!-- Info bar -->
       <div x-show="drift && !driftLoading" x-transition
            class="rounded-2xl px-5 py-4 border border-gray-800 text-xs text-gray-400 space-y-1"
            style="background:#0d1224">
-        <p class="text-gray-400 font-semibold text-[10px] uppercase tracking-widest pb-1">
-          Rolling daily comparison &mdash; yesterday vs today
-        </p>
+        <p class="text-gray-400 font-semibold text-[10px] uppercase tracking-widest pb-1"
+           x-text="driftWindow === '1d' ? 'Daily comparison \u2014 today vs yesterday' : 'Weekly comparison \u2014 this week vs prior week'"
+        ></p>
         <p>
           <span class="text-gray-500 font-semibold uppercase tracking-wider">City:</span>
           <span class="text-white ml-2" x-text="drift?.city"></span>
@@ -321,8 +334,8 @@
 
     </div><!-- /drift -->
 
-    <!-- ── SYSTEM / DASHBOARD TAB ─────────────────────────────────────────────── -->
-    <div x-show="activeTab === 'system'" x-transition class="space-y-6">
+    <!-- ── METRICS TAB ─────────────────────────────────────────────────────── -->
+    <div x-show="activeView === 'metrics'" x-transition class="space-y-6">
 
       <div x-show="metaLoading" class="flex items-center justify-center py-16 text-gray-500 gap-3">
         <svg class="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
@@ -380,8 +393,18 @@
 
       <!-- Live Production Metrics -->
       <div x-show="meta && !metaLoading" x-transition class="space-y-3">
-        <div class="flex items-center justify-between">
-          <h2 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Live Production Metrics &mdash; last 7 days</h2>
+        <div class="flex items-center justify-between flex-wrap gap-2">
+          <div class="flex items-center gap-3">
+            <h2 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Live Production Metrics</h2>
+            <div class="flex gap-1">
+              <template x-for="[val, label] in [['24','24h'],['48','48h'],['72','72h'],['168','7d'],['720','30d']]" :key="val">
+                <button @click="metricsHours=val; liveMetrics=null; metricsCity=null; fetchLiveMetrics()"
+                        :class="metricsHours===val ? 'bg-green-700 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200'"
+                        class="px-2.5 py-0.5 rounded-lg text-xs font-semibold transition-colors"
+                        x-text="label"></button>
+              </template>
+            </div>
+          </div>
           <span x-show="metricsLoading" class="text-xs text-gray-500 animate-pulse">Computing&hellip;</span>
           <span x-show="!metricsLoading && liveMetrics" class="text-xs text-gray-600" x-text="liveMetrics?.computed_at || ''"></span>
           <span x-show="!metricsLoading && !liveMetrics && !selectedCity" class="text-xs text-gray-600">Select a city in Forecast tab first</span>
@@ -539,10 +562,10 @@
       <!-- Retrain guidance -->
       <div x-show="meta && !metaLoading" x-transition
            class="rounded-2xl p-5 border border-gray-800" style="background:#0d1224">
-        <h2 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-3">Weekly Retrain Workflow</h2>
+        <h2 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-3">Daily Retrain Workflow</h2>
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
           <div class="space-y-1">
-            <p class="text-gray-400 font-semibold">1. Check drift each week</p>
+            <p class="text-gray-400 font-semibold">1. Check drift daily</p>
             <p class="text-gray-600 text-xs">Open Data Drift tab. If any feature |z| &gt; 1.0 (orange/red), retrain is recommended.</p>
           </div>
           <div class="space-y-1">
@@ -550,13 +573,13 @@
             <code class="block text-green-400 bg-gray-900 rounded px-3 py-2 text-xs mt-1">python ml/train.py --lookback-weeks 8</code>
           </div>
           <div class="space-y-1">
-            <p class="text-gray-400 font-semibold">3. Automated via cron</p>
-            <code class="block text-green-400 bg-gray-900 rounded px-3 py-2 text-xs mt-1">bash ml/retrain_weekly.sh</code>
+            <p class="text-gray-400 font-semibold">3. Automated via cron (05:00 UTC)</p>
+            <code class="block text-green-400 bg-gray-900 rounded px-3 py-2 text-xs mt-1">bash ml/retrain_daily.sh</code>
           </div>
         </div>
       </div>
 
-    </div><!-- /system -->
+    </div><!-- /metrics -->
 
   </main>
 
@@ -574,15 +597,17 @@
       history:      [],
       accuracy:     null,
       lastUpdated:  '',
-      activeTab:    'forecast',
+      activeView:   new URLSearchParams(location.search).get('view') || 'forecast',
       cityTimezone: 'UTC',
 
       // drift state
-      drift:        null,
-      driftCity:    null,
-      driftLoading: false,
+      drift:             null,
+      driftCity:         null,
+      driftLoading:      false,
+      driftWindow:       '1d',
+      driftWindowLoaded: null,
 
-      // system / dashboard state
+      // metrics / dashboard state
       meta:           null,
       metaLoading:    false,
       nextRefreshSec: 3600,
@@ -593,6 +618,7 @@
       liveMetrics:    null,
       metricsLoading: false,
       metricsCity:    null,
+      metricsHours:   '168',
 
       // chart instances
       _probaChart:    null,
@@ -618,12 +644,23 @@
         return p != null ? (p * 100).toFixed(1) + '%' : '—'
       },
 
+      // ── Navigation ─────────────────────────────────────────────────────────
+      setView(v) {
+        this.activeView = v
+        history.pushState({}, '', '?view=' + v)
+        if (v === 'drift')   this.fetchDrift()
+        if (v === 'metrics') { this.fetchMeta(); this.fetchLiveMetrics() }
+      },
+
       // ── Lifecycle ──────────────────────────────────────────────────────────
       async init() {
         const res   = await fetch('/cities')
         this.cities = await res.json()
         await this.fetchMeta()
         this._startAutoRefresh()
+        // If page was loaded with ?view=drift or ?view=metrics, trigger data load
+        if (this.activeView === 'drift')   this.fetchDrift()
+        if (this.activeView === 'metrics') this.fetchLiveMetrics()
       },
 
       // ── Actions ────────────────────────────────────────────────────────────
@@ -676,7 +713,7 @@
           this.lastUpdated = new Date().toLocaleTimeString()
           this._computeAccuracy()
           // Reset drift cache when city changes
-          if (this.driftCity !== this.selectedCity) { this.drift = null; this.driftCity = null }
+          if (this.driftCity !== this.selectedCity) { this.drift = null; this.driftCity = null; this.driftWindowLoaded = null }
           if (this.metricsCity !== this.selectedCity) { this.liveMetrics = null; this.metricsCity = null }
 
           // Wait for Alpine's x-transition (150ms) to finish showing the canvas
@@ -897,15 +934,17 @@
 
       async fetchDrift() {
         if (!this.selectedCity) return
-        if (this.driftCity === this.selectedCity && this.drift) return   // cached
+        // Cached: same city and same window
+        if (this.driftCity === this.selectedCity && this.driftWindowLoaded === this.driftWindow && this.drift) return
         this.driftLoading = true
         this.drift = null
         this.error = ''
         try {
-          const res = await fetch(`/drift/${this.selectedCity}`)
+          const res = await fetch(`/drift/${this.selectedCity}?window=${this.driftWindow}`)
           if (!res.ok) { const b = await res.json(); throw new Error(b.detail || 'Drift request failed') }
-          this.drift        = await res.json()
-          this.driftCity    = this.selectedCity
+          this.drift             = await res.json()
+          this.driftCity         = this.selectedCity
+          this.driftWindowLoaded = this.driftWindow
           // IMPORTANT: set driftLoading=false BEFORE rendering so x-show sections are visible
           this.driftLoading = false
           await new Promise(r => setTimeout(r, 250))  // wait past Alpine's 150ms x-transition
@@ -1052,7 +1091,7 @@
         this.metricsLoading = true
         this.liveMetrics    = null
         try {
-          const res = await fetch(`/metrics/${this.selectedCity}?hours=168`)
+          const res = await fetch(`/metrics/${this.selectedCity}?hours=${this.metricsHours}`)
           if (!res.ok) { this.metricsLoading = false; return }  // e.g. <10 labelled rows
           this.liveMetrics  = await res.json()
           this.metricsCity  = this.selectedCity

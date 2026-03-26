@@ -223,10 +223,10 @@ def city_history(
     return result
 
 
-def _build_drift_payload(slug: str, df: pd.DataFrame) -> dict | None:
+def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1) -> dict | None:
     """
-    Compute daily drift from a pre-fetched DataFrame covering the last 2 days.
-    Returns the drift payload dict, or None if there is not enough data.
+    Compute drift from a pre-fetched DataFrame.
+    `window_days=1` compares today vs yesterday; `window_days=7` compares this week vs prior week.
     `df` must include columns: timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3.
     """
     df = df.sort_values("timestamp").reset_index(drop=True)
@@ -237,12 +237,15 @@ def _build_drift_payload(slug: str, df: pd.DataFrame) -> dict | None:
     if len(df) < 10:
         return None
 
-    cutoff    = df["timestamp"].max() - pd.Timedelta(days=1)
+    cutoff    = df["timestamp"].max() - pd.Timedelta(days=window_days)
     ref_df    = df[df["timestamp"] <  cutoff]
     recent_df = df[df["timestamp"] >= cutoff]
 
     if len(ref_df) < 5 or len(recent_df) < 5:
         return None
+
+    ref_label    = "yesterday"    if window_days == 1 else "prior 7 days"
+    recent_label = "today"        if window_days == 1 else "last 7 days"
 
     feature_cols = ["aqi", "co", "no", "no2", "o3", "so2", "pm2_5", "pm10", "nh3"]
     features_out: dict = {}
@@ -278,44 +281,47 @@ def _build_drift_payload(slug: str, df: pd.DataFrame) -> dict | None:
         "timezone":         CITY_TIMEZONES.get(slug, "UTC"),
         "ref_rows":         len(ref_df),
         "recent_rows":      len(recent_df),
-        "ref_window":       f"{ref_df['timestamp'].min()} to {ref_df['timestamp'].max()} (yesterday)",
-        "recent_window":    f"{recent_df['timestamp'].min()} to {recent_df['timestamp'].max()} (today)",
+        "ref_window":       f"{ref_df['timestamp'].min()} to {ref_df['timestamp'].max()} ({ref_label})",
+        "recent_window":    f"{recent_df['timestamp'].min()} to {recent_df['timestamp'].max()} ({recent_label})",
         "features":         features_out,
         "aqi_distribution": aqi_dist,
     }
 
 
-@app.get("/drift/{city_slug}", summary="Rolling daily drift: today vs yesterday")
-def city_drift(city_slug: str) -> dict:
+@app.get("/drift/{city_slug}", summary="Drift monitor: today vs yesterday (1d) or this week vs prior week (7d)")
+def city_drift(
+    city_slug: str,
+    window: str = Query(default="1d", pattern="^(1d|7d)$", description="Comparison window: '1d' (today vs yesterday) or '7d' (this week vs prior week)"),
+) -> dict:
     """
-    Rolling daily drift monitor.
+    Drift monitor comparing two non-overlapping windows.
 
-    Compares the distribution of raw pollutant features between two
-    non-overlapping 24-hour windows:
-      - reference : yesterday (24h → 48h ago)
-      - recent    : today (last 24 hours)
+    window=1d: today (last 24h) vs yesterday (24–48h ago)
+    window=7d: last 7 days vs prior 7 days
 
     Returns per-feature z-score drift and AQI class distribution shift.
     Retrain when |z| > 1.0 or the AQI distribution has shifted significantly.
     Result is served from Redis when pre-loaded by /warm-cache.
     """
-    slug      = _validate_city(city_slug)
-    cache_key = f"aqi:drift:{slug}"
-    cached    = _cache_get(cache_key)
+    slug        = _validate_city(city_slug)
+    cache_key   = f"aqi:drift:{slug}:{window}"
+    cached      = _cache_get(cache_key)
     if cached:
         return cached
 
+    window_days = 1 if window == "1d" else 7
+    interval    = "2" if window == "1d" else "14"
     df = _athena(f"""
         SELECT timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
         FROM aqi_db.aqi_unified
         WHERE city_slug = '{slug}'
-          AND timestamp >= current_timestamp - interval '2' day
+          AND timestamp >= current_timestamp - interval '{interval}' day
         ORDER BY timestamp ASC
     """)
 
-    payload = _build_drift_payload(slug, df)
+    payload = _build_drift_payload(slug, df, window_days=window_days)
     if payload is None:
-        raise HTTPException(422, "Not enough data for drift analysis (need >= 10 rows and >= 5 per 24-hour window)")
+        raise HTTPException(422, "Not enough data for drift analysis (need >= 10 rows and >= 5 rows per window)")
 
     _cache_set(cache_key, payload)
     return payload
@@ -324,7 +330,7 @@ def city_drift(city_slug: str) -> dict:
 @app.get("/metrics/{city_slug}", summary="Online F1 / Precision / Recall from recent production data")
 def city_metrics(
     city_slug: str,
-    hours: int = Query(default=168, ge=24, le=336, description="Look-back window in hours (max 336=14 days)"),
+    hours: int = Query(default=168, ge=24, le=720, description="Look-back window in hours (24h/48h/72h/168h=7d/720h=30d)"),
 ) -> dict:
     """
     Computes Precision, Recall, F1 by comparing model T+1 predictions against
@@ -464,11 +470,50 @@ def warm_cache() -> dict:
         else:
             skipped.append(slug)
 
-        # Pre-populate drift (yesterday vs today) from the same already-fetched data
-        drift_df = city_df[city_df["timestamp"] >= city_df["timestamp"].max() - pd.Timedelta(days=2)].copy()
-        drift_payload = _build_drift_payload(slug, drift_df)
-        if drift_payload is not None:
-            _cache_set(f"aqi:drift:{slug}", drift_payload)
+        # Pre-populate drift windows (1d and 7d) from already-fetched data
+        max_ts = city_df["timestamp"].max()
+        for w_days, w_label in [(1, "1d"), (7, "7d")]:
+            fetch_days = w_days * 2
+            drift_df = city_df[city_df["timestamp"] >= max_ts - pd.Timedelta(days=fetch_days)].copy()
+            drift_payload = _build_drift_payload(slug, drift_df, window_days=w_days)
+            if drift_payload is not None:
+                _cache_set(f"aqi:drift:{slug}:{w_label}", drift_payload)
+
+        # Pre-populate all metrics windows
+        if len(rows) >= 10:
+            for h in (24, 48, 72, 168, 720):
+                limit = h + 2
+                rows_window = rows[-limit:] if len(rows) > limit else rows
+                predictions = batch_predict(_model, _median, rows_window)
+                valid = [(r["predicted"], r["actual"]) for r in predictions if r["actual"] is not None]
+                if len(valid) >= 10:
+                    from sklearn.metrics import precision_recall_fscore_support as _prfs
+                    y_pred = [p for p, _ in valid]
+                    y_true = [a for _, a in valid]
+                    labels = [1, 2, 3, 4, 5]
+                    prec_w, rec_w, f1_w, _ = _prfs(y_true, y_pred, average="weighted", labels=labels, zero_division=0)
+                    prec_cls, rec_cls, f1_cls, sup_cls = _prfs(y_true, y_pred, labels=labels, zero_division=0)
+                    metrics_payload = {
+                        "city":          KNOWN_CITIES[slug]["name"],
+                        "window_hours":  h,
+                        "n_predictions": len(valid),
+                        "weighted": {
+                            "f1":        round(float(f1_w),   4),
+                            "precision": round(float(prec_w), 4),
+                            "recall":    round(float(rec_w),  4),
+                        },
+                        "per_class": {
+                            str(cls): {
+                                "f1":        round(float(f1_cls[i]),   4),
+                                "precision": round(float(prec_cls[i]), 4),
+                                "recall":    round(float(rec_cls[i]),  4),
+                                "support":   int(sup_cls[i]),
+                            }
+                            for i, cls in enumerate(labels)
+                        },
+                        "computed_at": datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                    }
+                    _cache_set(f"aqi:metrics:{slug}:{h}", metrics_payload)
 
     return {
         "status":        "ok",
