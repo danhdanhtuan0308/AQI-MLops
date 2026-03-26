@@ -59,7 +59,7 @@ def _athena_run(client, sql: str, label: str) -> None:
         resp  = client.get_query_execution(QueryExecutionId=exec_id)
         state = resp["QueryExecution"]["Status"]["State"]
         if state == "SUCCEEDED":
-            logger.info(f"✅ {label}")
+            logger.info(f"{label}")
             return
         if state in ("FAILED", "CANCELLED"):
             reason = resp["QueryExecution"]["Status"].get("StateChangeReason", "")
