@@ -277,27 +277,6 @@
         </div>
       </section>
 
-      <!-- AQI class distribution chart -->
-      <section x-show="drift && !driftLoading" x-transition
-               class="rounded-2xl p-5 border border-gray-800" style="background:#0d1224">
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">
-            AQI Class Distribution Shift
-          </h2>
-          <div class="flex gap-5 text-[11px] text-gray-500">
-            <span class="flex items-center gap-1.5">
-              <span class="w-3 h-0.5 rounded inline-block" style="background:#9ca3af"></span> Reference
-            </span>
-            <span class="flex items-center gap-1.5">
-              <span class="w-3 h-0.5 rounded inline-block" style="background:#a78bfa"></span> Recent
-            </span>
-          </div>
-        </div>
-        <div class="h-64">
-          <canvas id="driftAqiChart"></canvas>
-        </div>
-      </section>
-
       <!-- Prediction Distribution Shift -->
       <section x-show="drift?.prediction_distribution && !driftLoading" x-transition
                class="rounded-2xl p-5 border border-gray-800" style="background:#0d1224">
@@ -643,7 +622,6 @@
       _probaChart:    null,
       _histChart:     null,
       _driftFeatChart: null,
-      _driftAqiChart:  null,
       _driftPredChart: null,
 
       // AQI colours (matches Python AQI_META)
@@ -969,7 +947,6 @@
           this.driftLoading = false
           await new Promise(r => setTimeout(r, 250))  // wait past Alpine's 150ms x-transition
           this._renderDriftFeatChart()
-          this._renderDriftAqiChart()
           this._renderDriftPredChart()
         } catch(e) {
           this.error        = e.message
@@ -1033,63 +1010,6 @@
           },
         })
         this._driftFeatChart.resize()
-      },
-
-      _renderDriftAqiChart() {
-        if (!this.drift?.aqi_distribution) return
-        const aqiNames  = { '1':'Good','2':'Fair','3':'Moderate','4':'Poor','5':'Very Poor' }
-        const aqiColors = ['#50f0e6','#50ccaa','#f0e641','#ff5050','#960032']
-        const labels    = ['1','2','3','4','5'].map(k => `${k} · ${aqiNames[k]}`)
-        const refPcts   = ['1','2','3','4','5'].map(k => this.drift.aqi_distribution[k]?.ref_pct    || 0)
-        const recPcts   = ['1','2','3','4','5'].map(k => this.drift.aqi_distribution[k]?.recent_pct || 0)
-
-        // Defensive destroy: use Chart.js registry so stale references never block canvas reuse
-        const prev4 = Chart.getChart('driftAqiChart'); if (prev4) prev4.destroy()
-        const ctx = document.getElementById('driftAqiChart').getContext('2d')
-        this._driftAqiChart = new Chart(ctx, {
-          type: 'bar',
-          data: {
-            labels,
-            datasets: [
-              {
-                label:           'Reference',
-                data:            refPcts,
-                backgroundColor: aqiColors.map(c => c + '44'),
-                borderColor:     aqiColors,
-                borderWidth:     2,
-                borderRadius:    4,
-              },
-              {
-                label:           'Recent',
-                data:            recPcts,
-                backgroundColor: aqiColors.map(c => c + 'bb'),
-                borderColor:     aqiColors,
-                borderWidth:     2,
-                borderRadius:    4,
-              },
-            ],
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-              legend: { labels: { color: '#9ca3af', font: { size: 12 }, boxWidth: 14 } },
-              tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.raw}%` } },
-            },
-            scales: {
-              y: {
-                grid:  { color: '#1f2937' },
-                ticks: { color: '#9ca3af', callback: v => v + '%' },
-                title: { display: true, text: 'Share of Hours (%)', color: '#6b7280', font: { size: 11 } },
-              },
-              x: {
-                grid:  { display: false },
-                ticks: { color: '#9ca3af', font: { size: 11 } },
-              },
-            },
-          },
-        })
-        this._driftAqiChart.resize()
       },
 
       _renderDriftPredChart() {
