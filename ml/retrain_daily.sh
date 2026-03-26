@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# retrain_weekly.sh — Rolling 7-day retrain for the AQI forecasting model
+# retrain_daily.sh — Daily retrain for the AQI forecasting model
 #
-# Run manually or via cron / GitHub Actions every Monday.
+# Run manually or via cron / GitHub Actions every day at 05:00 UTC.
 # Usage:
-#   ./ml/retrain_weekly.sh              # default: 8-week lookback
-#   ./ml/retrain_weekly.sh 4            # custom lookback in weeks
-#   ./ml/retrain_weekly.sh --no-reload  # skip restart reminder
+#   ./ml/retrain_daily.sh              # default: 8-week lookback
+#   ./ml/retrain_daily.sh 4            # custom lookback in weeks
+#   ./ml/retrain_daily.sh --no-reload  # skip restart reminder
 #
-# Cron example (every Monday at 02:00 UTC):
-#   0 2 * * 1 cd /path/to/repo && ./ml/retrain_weekly.sh >> logs/retrain.log 2>&1
+# Cron example (every day at 05:00 UTC):
+#   0 5 * * * cd /path/to/repo && ./ml/retrain_daily.sh >> logs/retrain.log 2>&1
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -37,7 +37,7 @@ fi
 
 # ── Run ──────────────────────────────────────────────────────────────────────
 echo "═══════════════════════════════════════════════════════" | tee -a "$LOG_FILE"
-echo "  AQI Weekly Retrain" | tee -a "$LOG_FILE"
+echo "  AQI Daily Retrain" | tee -a "$LOG_FILE"
 echo "  Started : $TIMESTAMP" | tee -a "$LOG_FILE"
 echo "  Lookback: last $LOOKBACK weeks" | tee -a "$LOG_FILE"
 echo "  Log     : $LOG_FILE" | tee -a "$LOG_FILE"
