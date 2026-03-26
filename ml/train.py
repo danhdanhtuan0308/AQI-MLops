@@ -88,8 +88,8 @@ def load_data(lookback_weeks: int | None = None) -> pd.DataFrame:
     ----------
     lookback_weeks:
         When set, restrict training data to the most recent N weeks.
-        Use ``None`` (default) to train on the full 12-month dataset.
-        Example: ``--lookback-weeks 8`` for a rolling 2-month retrain.
+        Use ``None`` (default) to train on all data ever ingested.
+        Example: ``--lookback-weeks 52`` for a rolling 1-year retrain.
     """
     import awswrangler as wr
 

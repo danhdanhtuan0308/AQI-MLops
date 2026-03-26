@@ -59,8 +59,9 @@ jobs:
 
       - name: Run daily retrain
         run: |
-          echo "Training on full dataset"
-          uv run python ml/train.py
+          WEEKS=${{ github.event.inputs.lookback_weeks || '52' }}
+          echo "Training on last ${WEEKS} weeks of data"
+          uv run python ml/train.py --lookback-weeks "$WEEKS"
 
       - name: Validate new model (smoke test)
         run: |
