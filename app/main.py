@@ -237,6 +237,9 @@ def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1,
     df["aqi"] = df["aqi"].clip(upper=5)
     # Computed feature: pm25_ratio (same formula used at inference time)
     df["pm25_ratio"] = df["pm2_5"] / (df["pm2_5"] + df["pm10"] + df["no2"] + df["o3"] + df["so2"] + 1e-9)
+    # Lag features: match exact model inputs (aqi_lag1, pm10_lag1 = T-1 values)
+    df["aqi_lag1"]  = df["aqi"].shift(1)
+    df["pm10_lag1"] = df["pm10"].shift(1)
 
     if len(df) < 10:
         return None
@@ -251,7 +254,8 @@ def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1,
     ref_label    = "yesterday"    if window_days == 1 else "prior 7 days"
     recent_label = "today"        if window_days == 1 else "last 7 days"
 
-    feature_cols = ["aqi", "co", "no", "no2", "o3", "so2", "pm10", "nh3", "pm25_ratio"]
+    # Track all 10 driftable model features (excludes hour/month sin/cos — deterministic, cannot drift)
+    feature_cols = ["aqi_lag1", "pm10_lag1", "pm25_ratio", "co", "no", "no2", "o3", "so2", "nh3", "pm10"]
     features_out: dict = {}
     for col in feature_cols:
         ref_v = ref_df[col].dropna()
