@@ -254,8 +254,9 @@ def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1,
     ref_label    = "yesterday"    if window_days == 1 else "prior 7 days"
     recent_label = "today"        if window_days == 1 else "last 7 days"
 
-    # Track all 10 driftable model features (excludes hour/month sin/cos — deterministic, cannot drift)
-    feature_cols = ["aqi_lag1", "pm10_lag1", "pm25_ratio", "co", "no", "no2", "o3", "so2", "nh3", "pm10"]
+    # Track all 9 driftable model features (pm10_lag1 omitted — near-identical to pm10 at 1h lag;
+    # hour/month sin/cos omitted — deterministic, cannot drift)
+    feature_cols = ["aqi_lag1", "pm25_ratio", "co", "no", "no2", "o3", "so2", "nh3", "pm10"]
     features_out: dict = {}
     for col in feature_cols:
         ref_v = ref_df[col].dropna()
