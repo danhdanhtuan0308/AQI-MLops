@@ -252,12 +252,15 @@ def _build_drift_payload(slug: str, df: pd.DataFrame) -> dict | None:
         if len(ref_v) < 2:
             continue
         ref_mean = float(ref_v.mean())
-        ref_std  = max(float(ref_v.std()), 1e-9)
+        # Use a relative floor (1% of scale) so near-constant distributions
+        # don't produce astronomically large z-scores via a near-zero std.
+        ref_std  = max(float(ref_v.std()), 0.01 * max(abs(ref_mean), 1.0))
         rec_mean = float(rec_v.mean())
+        raw_score = (rec_mean - ref_mean) / ref_std
         features_out[col] = {
             "ref_mean":    round(ref_mean, 4),
             "recent_mean": round(rec_mean, 4),
-            "drift_score": round((rec_mean - ref_mean) / ref_std, 3),
+            "drift_score": round(max(-10.0, min(10.0, raw_score)), 3),
         }
 
     ref_dist = ref_df["aqi"].dropna().astype(int).value_counts(normalize=True)
