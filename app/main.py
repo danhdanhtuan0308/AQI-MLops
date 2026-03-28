@@ -71,13 +71,17 @@ def _cache_get(key: str):
         return None
 
 
-def _cache_set(key: str, value) -> None:
+def _cache_set(key: str, value) -> bool:
+    """Returns True on success, False on failure (also logs the error)."""
     if _redis is None:
-        return
+        return False
     try:
         _redis.setex(key, CACHE_TTL, json.dumps(value, default=str))
-    except Exception:
-        pass
+        return True
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("Redis _cache_set failed for %s: %s", key, e)
+        return False
 
 
 def _cache_clear(pattern: str = "aqi:*") -> None:
@@ -451,7 +455,7 @@ def warm_cache() -> dict:
     """)
     df["aqi"] = pd.to_numeric(df["aqi"], errors="coerce").clip(upper=5)
 
-    cached, skipped = [], []
+    cached, skipped, cache_errors = [], [], 0
     for slug, city_df in df.groupby("city_slug"):
         if slug not in KNOWN_CITIES:
             continue
@@ -462,7 +466,8 @@ def warm_cache() -> dict:
             history = batch_predict(_model, _median, rows)
             for h in (24, 48, 168, 720):
                 window = history[-h:] if len(history) > h else history
-                _cache_set(f"aqi:history:{slug}:{h}", window)
+                if not _cache_set(f"aqi:history:{slug}:{h}", window):
+                    cache_errors += 1
 
         # Pre-populate predict
         if len(rows) >= 2:
@@ -481,7 +486,8 @@ def warm_cache() -> dict:
                 "current_color": AQI_META.get(current_aqi, {}).get("color", "#ccc"),
                 "next_hour":     result,
             }
-            _cache_set(f"aqi:predict:{slug}", payload)
+            if not _cache_set(f"aqi:predict:{slug}", payload):
+                cache_errors += 1
             # Push to prediction buffer for Lambda C to flush to S3
             if _redis is not None:
                 try:
@@ -506,7 +512,8 @@ def warm_cache() -> dict:
             drift_df = city_df[city_df["timestamp"] >= max_ts - pd.Timedelta(days=fetch_days)].copy()
             drift_payload = _build_drift_payload(slug, drift_df, window_days=w_days, model=_model, median=_median)
             if drift_payload is not None:
-                _cache_set(f"aqi:drift:{slug}:{w_label}", drift_payload)
+                if not _cache_set(f"aqi:drift:{slug}:{w_label}", drift_payload):
+                    cache_errors += 1
 
         # Pre-populate all metrics windows
         if len(rows) >= 10:
@@ -542,13 +549,15 @@ def warm_cache() -> dict:
                         },
                         "computed_at": datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
                     }
-                    _cache_set(f"aqi:metrics:{slug}:{h}", metrics_payload)
+                    if not _cache_set(f"aqi:metrics:{slug}:{h}", metrics_payload):
+                        cache_errors += 1
 
     return {
-        "status":        "ok",
+        "status":        "ok" if cache_errors == 0 else "partial",
         "cities_cached": len(cached),
         "cities_skipped": len(skipped),
         "rows_fetched":  len(df),
+        "cache_errors":  cache_errors,
     }
 
 
