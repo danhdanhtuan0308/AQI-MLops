@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import threading
 from pathlib import Path
 
 import boto3
@@ -661,7 +662,9 @@ def reload_model() -> dict:
     _model, _median = load_artifacts()
     _cache_clear("aqi:*")  # invalidate all cached predictions/history
     _cache_feature_importance()  # recompute with new model weights
-    return {"status": "ok", "message": "Model reloaded successfully"}
+    # Re-warm the full cache in the background so requests aren't cold after a reload
+    threading.Thread(target=warm_cache, daemon=True).start()
+    return {"status": "ok", "message": "Model reloaded — cache re-warming in background"}
 
 
 @app.get("/cache/status", summary="Redis cache info (ops use)")
