@@ -24,7 +24,7 @@ import pandas as pd
 import redis as redis_lib
 import yaml
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from sklearn.metrics import precision_recall_fscore_support
 
