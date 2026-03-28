@@ -13,7 +13,7 @@
   </style>
 </head>
 
-<body class="text-gray-100 min-h-screen font-sans antialiased" x-data="dashboard()" x-init="init()" x-cloak>
+<body class="text-gray-100 min-h-screen font-sans antialiased" x-data="dashboard()" x-cloak>
 
   <!-- ── Header ─────────────────────────────────────────────────────────── -->
   <header class="border-b border-gray-800 px-6 py-4" style="background:#0d1224">
@@ -68,9 +68,10 @@
         <!-- Run button -->
         <button @click="fetchAll()"
                 :disabled="!selectedCity || loading"
-                class="px-7 py-2.5 rounded-xl font-semibold text-sm transition-all
+                class="px-7 py-2.5 rounded-xl font-semibold text-sm text-white transition-all
                        bg-blue-600 hover:bg-blue-500
-                       disabled:opacity-40 disabled:cursor-not-allowed">
+                       disabled:opacity-40 disabled:cursor-not-allowed"
+                :title="!selectedCity ? 'Select a city first' : 'Run forecast'">
           <span x-show="!loading">Run Forecast</span>
           <span x-show="loading" class="flex items-center gap-2">
             <svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
@@ -726,7 +727,6 @@
       _histChart:     null,
       _driftFeatChart: null,
       _driftPredChart: null,
-      _featImpChart:  null,
 
       // AQI colours (matches Python AQI_META)
       _aqiColors: {
@@ -758,6 +758,10 @@
       // ── Lifecycle ──────────────────────────────────────────────────────────
       async init() {
         this.cities = "__CITIES__"
+        // Sync Alpine state with any browser-restored form value (doesn't fire change events)
+        await this.$nextTick()
+        const citySelect = this.$el.querySelector('select[x-model="selectedCity"]')
+        if (citySelect?.value) this.selectedCity = citySelect.value
         await this.fetchMeta()
         this._startAutoRefresh()
         // If page was loaded with ?view=drift or ?view=metrics, trigger data load
@@ -1359,13 +1363,7 @@
         return `${m}:${s}`
       },
 
-      fmtTs(ts) {
-        if (!ts) return '—'
-        try {
-          const raw = ts.endsWith('Z') || ts.includes('+') ? ts : ts + 'Z'
-          return new Date(raw).toLocaleString(undefined, { timeZoneName: 'short' })
-        } catch { return ts }
-      },
+
 
       dataAgeHours() {
         if (!this.prediction?.as_of) return null
