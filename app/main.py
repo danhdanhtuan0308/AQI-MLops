@@ -704,9 +704,15 @@ def health() -> dict:
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 def dashboard() -> HTMLResponse:
     html = (Path(__file__).parent / "templates" / "index.html").read_text()
-    cities_json = json.dumps([
+    cities = [
         {**city, "timezone": CITY_TIMEZONES.get(city["slug"], "UTC")}
         for city in KNOWN_CITIES.values()
-    ])
+    ]
+    cities_json = json.dumps(cities)
+    city_options = "\n".join(
+        f'            <option value="{c["slug"]}">{c["name"]}</option>'
+        for c in cities
+    )
     html = html.replace('"__CITIES__"', cities_json)
+    html = html.replace('            __CITY_OPTIONS__', city_options)
     return HTMLResponse(html)
