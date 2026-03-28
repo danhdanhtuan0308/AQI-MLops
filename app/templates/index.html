@@ -648,6 +648,21 @@
         </table>
       </section>
 
+      <!-- Trend chart -->
+      <section x-show="featImpHistory && featImpHistory.length > 1 && !featImpLoading" x-transition
+               class="rounded-2xl p-5 border border-gray-800" style="background:#0d1224">
+        <h2 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
+          Gain Trend
+          <span class="ml-2 text-gray-700 normal-case font-normal">how top feature influence shifts after each daily retrain</span>
+        </h2>
+        <p x-show="featImpHistory && featImpHistory.length < 2" class="text-xs text-gray-600 mt-2">Trend available after 2+ retrains. Check back tomorrow.</p>
+        <div class="h-64 mt-3"><canvas id="featImpTrendChart"></canvas></div>
+      </section>
+      <p x-show="featImp && !featImpLoading && featImpHistory && featImpHistory.length < 2"
+         class="text-xs text-gray-600 text-center py-2">
+        Gain trend chart will appear after the second daily retrain (05:00 UTC).
+      </p>
+
       <!-- Interpretation guide -->
       <section x-show="featImp && !featImpLoading" x-transition
                class="rounded-2xl p-5 border border-gray-800" style="background:#0d1224">
@@ -688,10 +703,12 @@
       driftWindowLoaded: null,
 
       // feature importance state
-      featImp:        null,
-      featImpLoading: false,
-      featImpType:    'gain',
-      _featImpChart:  null,
+      featImp:             null,
+      featImpHistory:      null,
+      featImpLoading:      false,
+      featImpType:         'gain',
+      _featImpChart:       null,
+      _featImpTrendChart:  null,
 
       // metrics / dashboard state
       meta:           null,
@@ -1193,15 +1210,24 @@
         if (this.featImp) {
           await this.$nextTick()
           this._renderFeatImpChart()
+          if (this.featImpHistory) this._renderFeatImpTrendChart()
           return
         }
         this.featImpLoading = true
         try {
-          const res = await fetch('/feature-importance')
+          const [res, histRes] = await Promise.all([
+            fetch('/feature-importance'),
+            fetch('/feature-importance/history'),
+          ])
           if (!res.ok) { this.featImpLoading = false; return }
           this.featImp = await res.json()
+          if (histRes.ok) {
+            const h = await histRes.json()
+            this.featImpHistory = h.snapshots || []
+          }
           await new Promise(r => setTimeout(r, 200))
           this._renderFeatImpChart()
+          if (this.featImpHistory && this.featImpHistory.length > 1) this._renderFeatImpTrendChart()
         } catch(e) {
           // silent
         } finally {
@@ -1209,7 +1235,50 @@
         }
       },
 
-      _renderFeatImpChart() {
+      _renderFeatImpTrendChart() {
+        const history = this.featImpHistory
+        if (!history || history.length < 2) return
+        const prev6 = Chart.getChart('featImpTrendChart'); if (prev6) prev6.destroy()
+        const ctx = document.getElementById('featImpTrendChart')
+        if (!ctx) return
+        // Labels = date from computed_at
+        const labels = history.map(s => s.computed_at ? s.computed_at.split(' ')[0] : '?')
+        // Show top 5 features by gain in latest snapshot, others grouped
+        const latest = history[history.length - 1]
+        const topFeats = Object.entries(latest.gain || {})
+          .sort((a, b) => b[1] - a[1]).slice(0, 5).map(([f]) => f)
+        const palette = ['#eab308','#60a5fa','#34d399','#f87171','#a78bfa']
+        const datasets = topFeats.map((feat, i) => ({
+          label:       feat,
+          data:        history.map(s => +((s.gain?.[feat] || 0) * 100).toFixed(2)),
+          borderColor: palette[i],
+          backgroundColor: palette[i] + '22',
+          borderWidth: 2,
+          pointRadius: 3,
+          tension:     0.3,
+          fill:        false,
+        }))
+        this._featImpTrendChart = new Chart(ctx.getContext('2d'), {
+          type: 'line',
+          data: { labels, datasets },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { labels: { color: '#9ca3af', font: { size: 11 }, boxWidth: 12 } },
+              tooltip: { callbacks: { label: c => ` ${c.dataset.label}: ${c.parsed.y.toFixed(2)}%` } },
+            },
+            scales: {
+              x: { grid: { color: '#1f2937' }, ticks: { color: '#6b7280', font: { size: 10 } } },
+              y: {
+                grid:  { color: '#1f2937' },
+                ticks: { color: '#6b7280', font: { size: 11 }, callback: v => v + '%' },
+                title: { display: true, text: 'Gain (%)', color: '#6b7280', font: { size: 11 } },
+              },
+            },
+          },
+        })
+      },
         if (!this.featImp) return
         const fi    = this.featImp
         const type  = this.featImpType

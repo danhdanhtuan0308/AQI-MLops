@@ -144,6 +144,13 @@ def _cache_feature_importance() -> None:
             ).strftime("%Y-%m-%d %H:%M UTC"),
         }
         _cache_set("aqi:feature_importance", payload)
+        # Append snapshot to history list (capped at 30 entries = ~1 month of daily retrains)
+        if _redis is not None:
+            try:
+                _redis.rpush("aqi:feature_importance:history", json.dumps(payload, default=str))
+                _redis.ltrim("aqi:feature_importance:history", -30, -1)
+            except Exception:
+                pass
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning("feature importance cache failed: %s", e)
@@ -596,6 +603,22 @@ def warm_cache() -> dict:
         "rows_fetched":  len(df),
         "cache_errors":  cache_errors,
     }
+
+
+@app.get("/feature-importance/history", summary="Feature importance trend — one snapshot per daily retrain, last 30 days")
+def feature_importance_history() -> dict:
+    """
+    Returns up to 30 daily snapshots of feature importance (gain) so the dashboard
+    can plot how each feature's influence changes over time after each retrain.
+    """
+    if _redis is None:
+        raise HTTPException(status_code=503, detail="Redis not connected")
+    try:
+        raw = _redis.lrange("aqi:feature_importance:history", 0, -1)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    snapshots = [json.loads(r) for r in raw]
+    return {"snapshots": snapshots, "count": len(snapshots)}
 
 
 @app.get("/feature-importance", summary="XGBoost feature importances (weight / gain / cover) — model-level, not city-specific")
