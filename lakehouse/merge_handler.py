@@ -139,7 +139,7 @@ def handler(event, context):
                 headers={"Content-Type": "application/json"},
                 data=b"{}",
             )
-            urllib.request.urlopen(req, timeout=10)
+            urllib.request.urlopen(req, timeout=90)
             log.info("Cache warm triggered at %s/warm-cache", predict_url)
         except Exception as e:
             log.warning("Cache warm failed (non-fatal): %s", e)

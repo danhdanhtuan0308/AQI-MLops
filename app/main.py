@@ -24,8 +24,8 @@ import pandas as pd
 import redis as redis_lib
 import yaml
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi.responses import HTMLResponse, JSONResponse
 from sklearn.metrics import precision_recall_fscore_support
 
 from .inference import (
@@ -192,17 +192,17 @@ def list_cities() -> list[dict]:
 
 
 @app.get("/predict/{city_slug}", summary="Predict next-hour AQI for a city")
-def predict_city(city_slug: str) -> dict:
+def predict_city(city_slug: str) -> JSONResponse:
     """
     Fetches the two most recent rows for the city from Athena, builds
     the lag features, and returns the predicted AQI class for T+1.
-    Result is cached in Redis for 5 hours (data only updates hourly).
+    Result is cached in Redis for 2 hours (data only updates hourly).
     """
     slug      = _validate_city(city_slug)
     cache_key = f"aqi:predict:{slug}"
     cached    = _cache_get(cache_key)
     if cached:
-        return cached
+        return JSONResponse(cached, headers={"X-Cache": "HIT"})
 
     df = _athena(f"""
         SELECT timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
@@ -236,7 +236,7 @@ def predict_city(city_slug: str) -> dict:
         "next_hour":     result,
     }
     _cache_set(cache_key, payload)
-    return payload
+    return JSONResponse(payload, headers={"X-Cache": "MISS"})
 
 
 @app.get("/history/{city_slug}", summary="Predicted vs actual AQI history")
@@ -253,7 +253,7 @@ def city_history(
     cache_key = f"aqi:history:{slug}:{hours}"
     cached    = _cache_get(cache_key)
     if cached:
-        return cached
+        return JSONResponse(cached, headers={"X-Cache": "HIT"})
 
     fetch = hours + 2   # extra rows needed for lag computation
     df = _athena(f"""
@@ -268,7 +268,7 @@ def city_history(
     rows   = df.to_dict("records")
     result = batch_predict(_model, _median, rows)
     _cache_set(cache_key, result)
-    return result
+    return JSONResponse(result, headers={"X-Cache": "MISS"})
 
 
 def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1,
@@ -384,7 +384,7 @@ def city_drift(
     cache_key   = f"aqi:drift:{slug}:{window}"
     cached      = _cache_get(cache_key)
     if cached:
-        return cached
+        return JSONResponse(cached, headers={"X-Cache": "HIT"})
 
     window_days = 1 if window == "1d" else 7
     interval    = "2" if window == "1d" else "14"
@@ -401,7 +401,7 @@ def city_drift(
         raise HTTPException(422, "Not enough data for drift analysis (need >= 10 rows and >= 5 rows per window)")
 
     _cache_set(cache_key, payload)
-    return payload
+    return JSONResponse(payload, headers={"X-Cache": "MISS"})
 
 
 @app.get("/metrics/{city_slug}", summary="Online F1 / Precision / Recall from recent production data")
@@ -419,7 +419,7 @@ def city_metrics(
     cache_key = f"aqi:metrics:{slug}:{hours}"
     cached    = _cache_get(cache_key)
     if cached:
-        return cached
+        return JSONResponse(cached, headers={"X-Cache": "HIT"})
 
     limit = hours + 2
     df = _athena(f"""
@@ -477,7 +477,7 @@ def city_metrics(
         "computed_at": datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     }
     _cache_set(cache_key, metrics_payload)
-    return metrics_payload
+    return JSONResponse(metrics_payload, headers={"X-Cache": "MISS"})
 
 
 @app.post("/warm-cache", summary="Bulk-load 1-month history for all cities into Redis (called by Lambda B after each hourly merge)")
@@ -487,6 +487,9 @@ def warm_cache() -> dict:
     → populate Redis for history (24h/48h/168h/720h windows) and predict.
     Called automatically by Lambda B after each hourly MERGE so the dashboard
     is always served from Redis, never from on-demand Athena queries.
+
+    All Redis writes are batched into a single pipeline flush to avoid
+    ~1200 individual round-trips (would be ~26s at 22ms RTT each).
     """
     if _redis is None:
         return {"status": "skipped", "reason": "Redis not connected"}
@@ -499,21 +502,25 @@ def warm_cache() -> dict:
     """)
     df["aqi"] = pd.to_numeric(df["aqi"], errors="coerce").clip(upper=5)
 
-    cached, skipped, cache_errors = [], [], 0
+    # Collect all (key, serialised_value) pairs in memory — no Redis calls yet.
+    # One pipeline flush at the end replaces ~1200 sequential SETEX round-trips.
+    pipe_entries: list[tuple[str, str]] = []   # (key, json_str) for SETEX
+    pred_buf_entries: list[str]         = []   # rows for RPUSH aqi:pred_buffer
+
+    cached, skipped = [], []
     for slug, city_df in df.groupby("city_slug"):
         if slug not in KNOWN_CITIES:
             continue
         rows = city_df.sort_values("timestamp").to_dict("records")
 
-        # Pre-populate all common history windows
+        # History windows
         if len(rows) >= 3:
             history = batch_predict(_model, _median, rows)
             for h in (24, 48, 168, 720):
                 window = history[-h:] if len(history) > h else history
-                if not _cache_set(f"aqi:history:{slug}:{h}", window):
-                    cache_errors += 1
+                pipe_entries.append((f"aqi:history:{slug}:{h}", json.dumps(window, default=str)))
 
-        # Pre-populate predict
+        # Predict
         if len(rows) >= 2:
             X = build_feature_vector(rows[-2], rows[-1], _median)
             result = predict_single(_model, X)
@@ -530,36 +537,27 @@ def warm_cache() -> dict:
                 "current_color": AQI_META.get(current_aqi, {}).get("color", "#ccc"),
                 "next_hour":     result,
             }
-            if not _cache_set(f"aqi:predict:{slug}", payload):
-                cache_errors += 1
-            # Push to prediction buffer for Lambda C to flush to S3
-            if _redis is not None:
-                try:
-                    record = json.dumps({
-                        "city_slug":    slug,
-                        "as_of":        str(as_of_ts),
-                        "forecast_for": str(as_of_ts + pd.Timedelta(hours=1)),
-                        "predicted":    result["predicted_aqi"],
-                        "confidence":   result["probabilities"][str(result["predicted_aqi"])],
-                    }, default=str)
-                    _redis.rpush("aqi:pred_buffer", record)
-                except Exception:
-                    pass
+            pipe_entries.append((f"aqi:predict:{slug}", json.dumps(payload, default=str)))
+            pred_buf_entries.append(json.dumps({
+                "city_slug":    slug,
+                "as_of":        str(as_of_ts),
+                "forecast_for": str(as_of_ts + pd.Timedelta(hours=1)),
+                "predicted":    result["predicted_aqi"],
+                "confidence":   result["probabilities"][str(result["predicted_aqi"])],
+            }, default=str))
             cached.append(slug)
         else:
             skipped.append(slug)
 
-        # Pre-populate drift windows (1d and 7d) from already-fetched data
+        # Drift windows (1d and 7d) from already-fetched data
         max_ts = city_df["timestamp"].max()
         for w_days, w_label in [(1, "1d"), (7, "7d")]:
-            fetch_days = w_days * 2
-            drift_df = city_df[city_df["timestamp"] >= max_ts - pd.Timedelta(days=fetch_days)].copy()
+            drift_df = city_df[city_df["timestamp"] >= max_ts - pd.Timedelta(days=w_days * 2)].copy()
             drift_payload = _build_drift_payload(slug, drift_df, window_days=w_days, model=_model, median=_median)
             if drift_payload is not None:
-                if not _cache_set(f"aqi:drift:{slug}:{w_label}", drift_payload):
-                    cache_errors += 1
+                pipe_entries.append((f"aqi:drift:{slug}:{w_label}", json.dumps(drift_payload, default=str)))
 
-        # Pre-populate all metrics windows
+        # Metrics windows
         if len(rows) >= 10:
             for h in (24, 48, 72, 168, 720):
                 limit = h + 2
@@ -593,15 +591,29 @@ def warm_cache() -> dict:
                         },
                         "computed_at": datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
                     }
-                    if not _cache_set(f"aqi:metrics:{slug}:{h}", metrics_payload):
-                        cache_errors += 1
+                    pipe_entries.append((f"aqi:metrics:{slug}:{h}", json.dumps(metrics_payload, default=str)))
+
+    # Single pipeline flush — one TCP round-trip for all SETEX + RPUSH commands
+    cache_errors = 0
+    try:
+        pipe = _redis.pipeline(transaction=False)
+        for key, val in pipe_entries:
+            pipe.setex(key, CACHE_TTL, val)
+        if pred_buf_entries:
+            pipe.rpush("aqi:pred_buffer", *pred_buf_entries)
+        pipe.execute()
+    except Exception as e:
+        cache_errors = len(pipe_entries)
+        import logging
+        logging.getLogger(__name__).warning("warm-cache pipeline flush failed: %s", e)
 
     return {
-        "status":        "ok" if cache_errors == 0 else "partial",
-        "cities_cached": len(cached),
+        "status":         "ok" if cache_errors == 0 else "partial",
+        "cities_cached":  len(cached),
         "cities_skipped": len(skipped),
-        "rows_fetched":  len(df),
-        "cache_errors":  cache_errors,
+        "rows_fetched":   len(df),
+        "keys_written":   len(pipe_entries),
+        "cache_errors":   cache_errors,
     }
 
 
