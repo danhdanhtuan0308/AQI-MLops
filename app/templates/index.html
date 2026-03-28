@@ -682,7 +682,6 @@
   function dashboard() {
     return {
       // state
-      cities:       [],
       selectedCity: '',
       hours:        '48',
       loading:      false,
@@ -757,11 +756,6 @@
 
       // ── Lifecycle ──────────────────────────────────────────────────────────
       async init() {
-        this.cities = "__CITIES__"
-        // Sync Alpine state with any browser-restored form value (doesn't fire change events)
-        await this.$nextTick()
-        const citySelect = this.$el.querySelector('select[x-model="selectedCity"]')
-        if (citySelect?.value) this.selectedCity = citySelect.value
         await this.fetchMeta()
         this._startAutoRefresh()
         // If page was loaded with ?view=drift or ?view=metrics, trigger data load
