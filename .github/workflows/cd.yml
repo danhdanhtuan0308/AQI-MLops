@@ -54,8 +54,11 @@ jobs:
             echo "── Building Docker image ─────────────────────────────"
             docker compose build
 
+            echo "── Stopping any existing containers ─────────────────"
+            docker compose down --remove-orphans || true
+
             echo "── Starting container ────────────────────────────────"
-            docker compose up -d --force-recreate --remove-orphans
+            docker compose up -d --remove-orphans
             sleep 20
 
             echo "── Ensure model artifact exists (retrain if missing) ──"
