@@ -108,9 +108,38 @@ def _startup() -> None:
             _redis.ping()
         except Exception:
             _redis = None
+    _cache_feature_importance()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _cache_feature_importance() -> None:
+    """Compute feature importance from the loaded model and write to Redis."""
+    if _model is None:
+        return
+    try:
+        booster = _model.get_booster()
+        weight  = booster.get_score(importance_type="weight")
+        gain    = booster.get_score(importance_type="gain")
+        cover   = booster.get_score(importance_type="cover")
+        # Normalise each type to 0-1 so charts are comparable
+        def _norm(d: dict) -> dict:
+            total = sum(d.values()) or 1
+            return {k: round(v / total, 4) for k, v in d.items()}
+        payload = {
+            "features":    FEATURES,
+            "weight":      _norm(weight),
+            "gain":        _norm(gain),
+            "cover":       _norm(cover),
+            "computed_at": __import__("datetime").datetime.now(
+                tz=__import__("datetime").timezone.utc
+            ).strftime("%Y-%m-%d %H:%M UTC"),
+        }
+        _cache_set("aqi:feature_importance", payload)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("feature importance cache failed: %s", e)
+
 
 def _validate_city(city_slug: str) -> str:
     """Return the validated slug or raise 404. Prevents SQL injection."""
@@ -561,6 +590,24 @@ def warm_cache() -> dict:
     }
 
 
+@app.get("/feature-importance", summary="XGBoost feature importances (weight / gain / cover) — model-level, not city-specific")
+def feature_importance() -> dict:
+    """
+    Returns normalised feature importance scores for all three XGBoost importance
+    types (weight = split frequency, gain = avg loss reduction, cover = avg sample
+    coverage). Served from Redis; computed once per model load/reload.
+    """
+    cached = _cache_get("aqi:feature_importance")
+    if cached:
+        return cached
+    # Cold path — compute on the fly (e.g. first call before warm-cache)
+    _cache_feature_importance()
+    result = _cache_get("aqi:feature_importance")
+    if result:
+        return result
+    raise HTTPException(status_code=503, detail="Model not loaded yet")
+
+
 @app.post("/reload-model", summary="Hot-reload model artifacts without restarting the server")
 def reload_model() -> dict:
     """
@@ -570,6 +617,7 @@ def reload_model() -> dict:
     global _model, _median
     _model, _median = load_artifacts()
     _cache_clear("aqi:*")  # invalidate all cached predictions/history
+    _cache_feature_importance()  # recompute with new model weights
     return {"status": "ok", "message": "Model reloaded successfully"}
 
 
