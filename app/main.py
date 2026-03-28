@@ -122,6 +122,14 @@ def _cache_feature_importance() -> None:
         weight  = booster.get_score(importance_type="weight")
         gain    = booster.get_score(importance_type="gain")
         cover   = booster.get_score(importance_type="cover")
+        # XGBoost uses internal names f0, f1, … when feature_names aren't set.
+        # Map them back to the canonical FEATURES list by index.
+        fmap = {f"f{i}": name for i, name in enumerate(FEATURES)}
+        def _remap(d: dict) -> dict:
+            return {fmap.get(k, k): v for k, v in d.items()}
+        weight = _remap(weight)
+        gain   = _remap(gain)
+        cover  = _remap(cover)
         # Normalise each type to 0-1 so charts are comparable
         def _norm(d: dict) -> dict:
             total = sum(d.values()) or 1
