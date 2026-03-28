@@ -704,4 +704,9 @@ def health() -> dict:
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
 def dashboard() -> HTMLResponse:
     html = (Path(__file__).parent / "templates" / "index.html").read_text()
+    cities_json = json.dumps([
+        {**city, "timezone": CITY_TIMEZONES.get(city["slug"], "UTC")}
+        for city in KNOWN_CITIES.values()
+    ])
+    html = html.replace('"__CITIES__"', cities_json)
     return HTMLResponse(html)

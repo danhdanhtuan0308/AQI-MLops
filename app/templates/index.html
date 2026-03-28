@@ -42,11 +42,9 @@
           </label>
           <select x-model="selectedCity"
                   class="w-full rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-700"
-                  style="background:#161d33">
+                  style="background:#161d33"
+                  x-effect="while($el.options.length>1)$el.remove(1);cities.forEach(c=>$el.add(new Option(c.name,c.slug)))">
             <option value="">— select a city —</option>
-            <template x-for="c in cities" :key="c.slug">
-              <option :value="c.slug" x-text="c.name"></option>
-            </template>
           </select>
         </div>
 
@@ -759,8 +757,7 @@
 
       // ── Lifecycle ──────────────────────────────────────────────────────────
       async init() {
-        const res   = await fetch('/cities')
-        this.cities = await res.json()
+        this.cities = "__CITIES__"
         await this.fetchMeta()
         this._startAutoRefresh()
         // If page was loaded with ?view=drift or ?view=metrics, trigger data load
@@ -1222,8 +1219,13 @@
           if (!res.ok) { this.featImpLoading = false; return }
           this.featImp = await res.json()
           if (histRes.ok) {
-            const h = await histRes.json()
-            this.featImpHistory = h.snapshots || []
+            try {
+              const ct = histRes.headers.get('content-type') || ''
+              if (ct.includes('application/json')) {
+                const h = await histRes.json()
+                this.featImpHistory = h.snapshots || []
+              }
+            } catch(e) { /* ignore non-JSON response during deploys */ }
           }
           await new Promise(r => setTimeout(r, 200))
           this._renderFeatImpChart()
