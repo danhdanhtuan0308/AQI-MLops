@@ -243,7 +243,7 @@ def predict_city(city_slug: str) -> JSONResponse:
 @app.get("/history/{city_slug}", summary="Predicted vs actual AQI history")
 def city_history(
     city_slug: str,
-    hours: int = Query(default=48, ge=1, le=720, description="Look-back window in hours (max 720 = 1 month)"),
+    hours: int = Query(default=48, ge=1, le=168, description="Look-back window in hours (max 168 = 7 days)"),
 ) -> list[dict]:
     """
     Returns a time-ordered list of {timestamp, predicted, actual, current_aqi}.
@@ -408,7 +408,7 @@ def city_drift(
 @app.get("/metrics/{city_slug}", summary="Online F1 / Precision / Recall from recent production data")
 def city_metrics(
     city_slug: str,
-    hours: int = Query(default=168, ge=24, le=720, description="Look-back window in hours (24h/48h/72h/168h=7d/720h=30d)"),
+    hours: int = Query(default=168, ge=24, le=168, description="Look-back window in hours (24h/48h/72h/168h=7d)"),
 ) -> dict:
     """
     Computes Precision, Recall, F1 by comparing model T+1 predictions against
@@ -481,11 +481,11 @@ def city_metrics(
     return JSONResponse(metrics_payload, headers={"X-Cache": "MISS"})
 
 
-@app.post("/warm-cache", summary="Bulk-load 1-month history for all cities into Redis (called by Lambda B after each hourly merge)")
+@app.post("/warm-cache", summary="Bulk-load 7-day history for all cities into Redis (called by Lambda B after each hourly merge)")
 def warm_cache() -> dict:
     """
-    Single Athena query for ALL cities (last 722 hours) → batch_predict per city
-    → populate Redis for history (24h/48h/168h/720h windows) and predict.
+    Single Athena query for ALL cities (last 170 hours) → batch_predict per city
+    → populate Redis for history (24h/48h/72h/168h windows) and predict.
     Called automatically by Lambda B after each hourly MERGE so the dashboard
     is always served from Redis, never from on-demand Athena queries.
 
@@ -498,7 +498,7 @@ def warm_cache() -> dict:
     df = _athena("""
         SELECT timestamp, city_slug, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
         FROM aqi_db.aqi_unified
-        WHERE timestamp >= current_timestamp - interval '722' hour
+        WHERE timestamp >= current_timestamp - interval '170' hour
         ORDER BY city_slug, timestamp ASC
     """)
     df["aqi"] = pd.to_numeric(df["aqi"], errors="coerce").clip(upper=5)
@@ -517,7 +517,7 @@ def warm_cache() -> dict:
         # History windows
         if len(rows) >= 3:
             history = batch_predict(_model, _median, rows)
-            for h in (24, 48, 168, 720):
+            for h in (24, 48, 72, 168):
                 window = history[-h:] if len(history) > h else history
                 pipe_entries.append((f"aqi:history:{slug}:{h}", json.dumps(window, default=str)))
 
@@ -560,7 +560,7 @@ def warm_cache() -> dict:
 
         # Metrics windows
         if len(rows) >= 10:
-            for h in (24, 48, 72, 168, 720):
+            for h in (24, 48, 72, 168):
                 limit = h + 2
                 rows_window = rows[-limit:] if len(rows) > limit else rows
                 predictions = batch_predict(_model, _median, rows_window)

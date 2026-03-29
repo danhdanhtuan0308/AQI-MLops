@@ -57,11 +57,9 @@
                   class="rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 border border-gray-700"
                   style="background:#161d33">
             <option value="24">Last 24 h</option>
-            <!-- 6-month option removed: too slow even with Redis -->
             <option value="48" selected>Last 48 h</option>
             <option value="72">Last 72 h</option>
             <option value="168">Last 7 days</option>
-            <option value="720">Last 1 month</option>
           </select>
         </div>
 
@@ -399,7 +397,7 @@
           <div class="flex items-center gap-3">
             <h2 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Live Production Metrics</h2>
             <div class="flex gap-1">
-              <template x-for="[val, label] in [['24','24h'],['48','48h'],['72','72h'],['168','7d'],['720','30d']]" :key="val">
+              <template x-for="[val, label] in [['24','24h'],['48','48h'],['72','72h'],['168','7d']]" :key="val">
                 <button @click="metricsHours=val; liveMetrics=null; metricsCity=null; fetchLiveMetrics()"
                         :class="metricsHours===val ? 'bg-green-700 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200'"
                         class="px-2.5 py-0.5 rounded-lg text-xs font-semibold transition-colors"
