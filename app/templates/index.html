@@ -778,12 +778,14 @@
           ])
 
           if (!predRes.ok) {
-            const body = await predRes.json()
-            throw new Error(body.detail || 'Prediction request failed')
+            let detail = 'Prediction request failed'
+            try { detail = (await predRes.json()).detail || detail } catch {}
+            throw new Error(detail)
           }
           if (!histRes.ok) {
-            const body = await histRes.json()
-            throw new Error(body.detail || 'History request failed')
+            let detail = 'History request failed'
+            try { detail = (await histRes.json()).detail || detail } catch {}
+            throw new Error(detail)
           }
 
           this.prediction   = await predRes.json()
@@ -1039,7 +1041,7 @@
         this.error = ''
         try {
           const res = await fetch(`/drift/${this.selectedCity}?window=${this.driftWindow}`)
-          if (!res.ok) { const b = await res.json(); throw new Error(b.detail || 'Drift request failed') }
+          if (!res.ok) { let d = 'Drift request failed'; try { d = (await res.json()).detail || d } catch {}; throw new Error(d) }
           this.drift             = await res.json()
           this.driftCity         = this.selectedCity
           this.driftWindowLoaded = this.driftWindow
