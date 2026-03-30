@@ -1,0 +1,140 @@
+// =============================================================================
+// Grafana Alloy configuration — AQI MLOps Observability
+//
+// Signals shipped to Grafana Cloud:
+//   Metrics → Mimir  (Prometheus remote_write)
+//   Traces  → Tempo  (OTLP HTTP)
+//   Logs    → Loki   (Docker log tailing)
+//
+// Required env vars (add to your .env file — values come from Grafana Cloud):
+//   GRAFANA_API_KEY       Cloud Access Policy token (metrics:write logs:write traces:write)
+//   GRAFANA_PROM_URL      https://prometheus-prod-XX-prod-XX.grafana.net/api/prom/push
+//   GRAFANA_PROM_USER     Prometheus numeric user ID  (e.g. 1234567)
+//   GRAFANA_LOKI_URL      https://logs-prod-XX.grafana.net/loki/api/v1/push
+//   GRAFANA_LOKI_USER     Loki numeric user ID
+//   GRAFANA_TEMPO_URL     https://tempo-prod-XX.grafana.net/tempo
+//   GRAFANA_TEMPO_USER    Tempo numeric user ID
+//
+// Find all URLs + user IDs at:
+//   Grafana Cloud → Home → My Account → your stack → "Send data" for each signal
+// =============================================================================
+
+// ── 1. METRICS ────────────────────────────────────────────────────────────────
+// Scrape the FastAPI /metrics endpoint (prometheus-fastapi-instrumentator)
+// 'api' resolves via the shared Docker bridge network (service name in docker-compose)
+
+prometheus.scrape "aqi_api" {
+  targets = [{"__address__" = "api:8000"}]
+
+  scrape_interval = "15s"
+  metrics_path    = "/metrics"
+
+  forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+prometheus.remote_write "grafana_cloud" {
+  endpoint {
+    url = env("GRAFANA_PROM_URL")
+
+    basic_auth {
+      username = env("GRAFANA_PROM_USER")
+      password = env("GRAFANA_API_KEY")
+    }
+  }
+
+  external_labels = {
+    env     = "production",
+    service = "aqi-api",
+  }
+}
+
+// ── 2. TRACES ─────────────────────────────────────────────────────────────────
+// Receive OTLP spans from FastAPI (opentelemetry-instrumentation-fastapi)
+// The app sends to http://alloy:4318 — Alloy batches and forwards to Tempo
+
+otelcol.receiver.otlp "default" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+  output {
+    traces = [otelcol.processor.batch.default.input]
+  }
+}
+
+otelcol.processor.batch "default" {
+  output {
+    traces = [otelcol.exporter.otlphttp.tempo.input]
+  }
+}
+
+otelcol.exporter.otlphttp "tempo" {
+  client {
+    endpoint = env("GRAFANA_TEMPO_URL")
+    auth     = otelcol.auth.basic.grafana.handler
+  }
+}
+
+otelcol.auth.basic "grafana" {
+  username = env("GRAFANA_TEMPO_USER")
+  password = env("GRAFANA_API_KEY")
+}
+
+// ── 3. LOGS ───────────────────────────────────────────────────────────────────
+// Tail Docker log output from the aqi-api container → Loki
+
+discovery.docker "aqi_container" {
+  host = "unix:///var/run/docker.sock"
+
+  filter {
+    name   = "name"
+    values = ["aqi-api"]
+  }
+}
+
+loki.source.docker "aqi_api_logs" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.docker.aqi_container.targets
+  forward_to = [loki.process.parse_access_log.receiver]
+
+  labels = {
+    job       = "aqi-api",
+    env       = "production",
+    container = "aqi-api",
+  }
+}
+
+// Extract HTTP method + status code labels from uvicorn access log lines:
+//   INFO:     1.2.3.4:1234 - "GET /predict/london HTTP/1.1" 200 OK
+loki.process "parse_access_log" {
+  forward_to = [loki.write.grafana_cloud.receiver]
+
+  stage.regex {
+    expression = `"(?P<http_method>GET|POST|PUT|DELETE|PATCH) (?P<http_path>[^\s"]+) HTTP/[\d.]+" (?P<http_status>\d{3})`
+  }
+
+  stage.labels {
+    values = {
+      http_method = null,
+      http_status = null,
+    }
+  }
+}
+
+loki.write "grafana_cloud" {
+  endpoint {
+    url = env("GRAFANA_LOKI_URL")
+
+    basic_auth {
+      username = env("GRAFANA_LOKI_USER")
+      password = env("GRAFANA_API_KEY")
+    }
+  }
+
+  external_labels = {
+    env     = "production",
+    service = "aqi-api",
+  }
+}
