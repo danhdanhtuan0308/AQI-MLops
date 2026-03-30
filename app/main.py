@@ -130,9 +130,10 @@ def _startup() -> None:
     _cache_feature_importance()
 
     # Observability — direct push to Grafana Cloud (no-op when env vars not set)
-    from .telemetry import setup_logging, setup_metrics_push, setup_tracing
+    from .telemetry import setup_logging, setup_metrics_push, setup_system_metrics, setup_tracing
     setup_tracing(app)
     setup_metrics_push()
+    setup_system_metrics()   # CPU, memory, network, disk — must come after setup_metrics_push()
     setup_logging()
 
 

@@ -146,6 +146,21 @@ def setup_metrics_push() -> None:
         log.warning("opentelemetry packages not installed — metrics push disabled")
 
 
+# ── System Metrics (CPU, memory, network, disk) ────────────────────────────────
+
+def setup_system_metrics() -> None:
+    """Push host CPU/memory/network/disk metrics via OTel (uses global meter provider).
+
+    Must be called AFTER setup_metrics_push() so the global MeterProvider is set.
+    """
+    try:
+        from opentelemetry.instrumentation.system_metrics import SystemMetricsInstrumentor
+        SystemMetricsInstrumentor().instrument()
+        log.info("System metrics instrumentation enabled (CPU, memory, network, disk)")
+    except ImportError:
+        log.warning("opentelemetry-instrumentation-system-metrics not installed — system metrics disabled")
+
+
 # ── Logs → Grafana Cloud Loki ─────────────────────────────────────────────────
 
 class _LokiHandler(logging.Handler):
