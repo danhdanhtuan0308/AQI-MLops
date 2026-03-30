@@ -146,25 +146,23 @@ def handler(event, context):
     log.info("Triggered %s with key=%s", MERGE_LAMBDA, key)
 
     # ── Warm the inference API immediately after data lands ──────────────────
-    # The Iceberg merge is async; we wait briefly so Athena sees the new rows
-    # before we hit /predict.  Adjust PREDICT_WAIT_SEC (default 30) if needed.
+    # Call /warm-cache (single bulk Athena query for ALL cities) instead of
+    # individual /predict/{slug} calls.  /warm-cache refreshes every Redis key
+    # with a fresh 2-hour TTL, so keys never expire between hourly runs.
     if PREDICT_API_URL:
         wait_sec = float(os.environ.get("PREDICT_WAIT_SEC", "30"))
-        log.info("Waiting %.0fs for Iceberg merge before triggering inference…", wait_sec)
+        log.info("Waiting %.0fs for Iceberg merge before triggering /warm-cache…", wait_sec)
         time.sleep(wait_sec)
 
-        slugs = [c[1] for c in CITIES]
-        ok = 0
-        for slug in slugs:
-            try:
-                r = requests.get(
-                    f"{PREDICT_API_URL}/predict/{slug}",
-                    timeout=15,
-                )
-                r.raise_for_status()
-                ok += 1
-            except Exception as e:
-                log.warning("Inference warm-up failed for %s: %s", slug, e)
-        log.info("Inference warm-up done: %d/%d cities OK", ok, len(slugs))
+        try:
+            r = requests.post(
+                f"{PREDICT_API_URL}/warm-cache",
+                timeout=120,
+            )
+            r.raise_for_status()
+            body = r.json()
+            log.info("warm-cache OK: %s", body)
+        except Exception as e:
+            log.warning("warm-cache failed: %s", e)
 
     return {"statusCode": 200, "body": json.dumps({"cities": len(df), "key": key})}
