@@ -78,6 +78,7 @@ dependencies = [
     { name = "mlflow" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-instrumentation-fastapi" },
+    { name = "opentelemetry-instrumentation-system-metrics" },
     { name = "opentelemetry-sdk" },
     { name = "pandas" },
     { name = "prometheus-fastapi-instrumentator" },
@@ -111,6 +112,7 @@ requires-dist = [
     { name = "mlflow", specifier = ">=2.18.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.27" },
     { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.48b0" },
+    { name = "opentelemetry-instrumentation-system-metrics", specifier = ">=0.48b0" },
     { name = "opentelemetry-sdk", specifier = ">=1.27" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "prometheus-fastapi-instrumentator", specifier = ">=7.0" },
@@ -1531,6 +1533,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/37/35/aa727bb6e6ef930dcdc96a617b83748fece57b43c47d83ba8d83fbeca657/opentelemetry_instrumentation_fastapi-0.61b0.tar.gz", hash = "sha256:3a24f35b07c557ae1bbc483bf8412221f25d79a405f8b047de8b670722e2fa9f", size = 24800 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/91/05/acfeb2cccd434242a0a7d0ea29afaf077e04b42b35b485d89aee4e0d9340/opentelemetry_instrumentation_fastapi-0.61b0-py3-none-any.whl", hash = "sha256:a1a844d846540d687d377516b2ff698b51d87c781b59f47c214359c4a241047c", size = 13485 },
+]
+
+[[package]]
+name = "opentelemetry-instrumentation-system-metrics"
+version = "0.61b0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-instrumentation" },
+    { name = "psutil" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9c/68/a403ade03a7ccba3d113a02c041942ab8feb4471101eb3a02da6403e9258/opentelemetry_instrumentation_system_metrics-0.61b0.tar.gz", hash = "sha256:3eb55f9a058797cf915946cbb7445e00b31316ac3e55050475792edf3367c321", size = 17637 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8d/2b/3142c6e0f3c9a5be3e5187933bc28b0c8b7e77c04937aec317eee96e8fdb/opentelemetry_instrumentation_system_metrics-0.61b0-py3-none-any.whl", hash = "sha256:7d4fe3e0ce14e0e6eb18f5826100d6cc1af662e5a8ebc74e9b91fe23f192f3e8", size = 14909 },
 ]
 
 [[package]]
