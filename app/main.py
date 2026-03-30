@@ -498,7 +498,7 @@ def warm_cache() -> dict:
     df = _athena("""
         SELECT timestamp, city_slug, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
         FROM aqi_db.aqi_unified
-        WHERE timestamp >= current_timestamp - interval '170' hour
+        WHERE timestamp >= current_timestamp - interval '340' hour
         ORDER BY city_slug, timestamp ASC
     """)
     df["aqi"] = pd.to_numeric(df["aqi"], errors="coerce").clip(upper=5)
