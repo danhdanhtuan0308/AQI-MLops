@@ -149,14 +149,23 @@ def setup_metrics_push() -> None:
 # ── System Metrics (CPU, memory, network, disk) ────────────────────────────────
 
 def setup_system_metrics() -> None:
-    """Push host CPU/memory/network/disk metrics via OTel (uses global meter provider).
+    """Push host CPU/memory metrics via OTel (uses global meter provider).
 
+    Intentionally limited to CPU utilization + memory usage only to avoid
+    per-core/per-disk/per-NIC cardinality explosion on Grafana Cloud Free tier.
     Must be called AFTER setup_metrics_push() so the global MeterProvider is set.
     """
     try:
         from opentelemetry.instrumentation.system_metrics import SystemMetricsInstrumentor
-        SystemMetricsInstrumentor().instrument()
-        log.info("System metrics instrumentation enabled (CPU, memory, network, disk)")
+
+        # Only collect the two lowest-cardinality metrics to stay within Free tier limits.
+        # Omitting: system.cpu.time, disk.*, network.* (high series count per device).
+        minimal_config = {
+            "system.cpu.utilization": ["user", "system", "idle"],
+            "system.memory.usage":    ["used", "free", "available"],
+        }
+        SystemMetricsInstrumentor(config=minimal_config).instrument()
+        log.info("System metrics instrumentation enabled (CPU utilization, memory usage)")
     except ImportError:
         log.warning("opentelemetry-instrumentation-system-metrics not installed — system metrics disabled")
 
