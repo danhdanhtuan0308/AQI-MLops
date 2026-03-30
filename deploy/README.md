@@ -76,8 +76,17 @@ The .env file on EC2 must contain these variables:
 | AWS_SECRET_ACCESS_KEY | AWS credentials for Athena queries |
 | AWS_DEFAULT_REGION | AWS region, typically us-east-1 |
 | REDIS_URL | Redis Cloud connection string: redis://default:...@host:port |
+| GRAFANA_OTLP_ENDPOINT | OTLP gateway URL (e.g. https://otlp-gateway-prod-us-east-2.grafana.net/otlp) |
+| GRAFANA_OTLP_INSTANCE_ID | Grafana Cloud instance ID for OTLP Basic auth |
+| GRAFANA_API_KEY | Grafana Cloud API key (used for metrics, traces, and logs) |
+| GRAFANA_LOKI_URL | Loki push URL (e.g. https://logs-prod-036.grafana.net/loki/api/v1/push) |
+| GRAFANA_LOKI_USER | Loki instance user ID |
+| OTEL_SERVICE_NAME | OpenTelemetry service name tag (default: aqi-api) |
+| OTEL_SERVICE_VERSION | OpenTelemetry service version tag (default: 1.0) |
 
-The REDIS_URL is the most important addition. Without it, Redis caching is disabled and every dashboard request hits Athena directly.
+The REDIS_URL is critical. Without it, Redis caching is disabled and every dashboard request hits Athena directly.
+
+The GRAFANA_* variables enable observability. If any are missing, the corresponding signal (metrics, traces, or logs) is silently disabled and the service runs without it.
 
 ---
 
@@ -127,117 +136,6 @@ The cd.yml GitHub Actions workflow deploys automatically when code is pushed to 
 5. Waits for /health to return HTTP 200
 
 The --force-recreate flag ensures the new container always replaces the old one even if the compose config did not change.
-
----
-
-## Directory Structure
-
-```
-deploy/
-├── setup_ec2.sh      # One-time bootstrap: install Docker, clone repo, configure nginx + systemd
-├── aqi-api.service   # systemd unit — manages docker compose lifecycle, auto-restarts on failure
-└── nginx.conf        # nginx reverse proxy: port 80 → 127.0.0.1:8000 (Docker container)
-```
-
----
-
-## Instance Details
-
-| Property | Value |
-|---|---|
-| Instance ID | `i-028aa0d0c1c305362` |
-| Instance type | `t4g.small` (2 vCPU, 2 GB RAM, ARM64 Graviton2) |
-| AMI | `ami-0bc0f64eea5d47edf` (Ubuntu 24.04 LTS ARM64, 2026-03-21) |
-| Region | `us-east-1` |
-| Public IP | `3.94.115.44` |
-| Public DNS | `ec2-3-94-115-44.compute-1.amazonaws.com` |
-| Security group | `sg-0ff863b76ab5d0102` — ports 22 (SSH) and 80 (HTTP) open |
-| Key pair | `aqi-mlops-key` |
-
-**Access URLs:**
-- `http://3.94.115.44/` — Dashboard
-- `http://3.94.115.44/health` — Health check
-- `http://3.94.115.44/metrics/{city_slug}` — Live F1/Precision/Recall
-
----
-
-## setup_ec2.sh
-
-One-time bootstrap script. Run once after launching a fresh EC2 instance.
-
-**What it does (in order):**
-1. `apt-get` installs: `git`, `curl`, `nginx`
-2. Installs Docker Engine via the official convenience script (`get.docker.com`) — includes `docker compose` plugin
-3. Adds `ubuntu` to the `docker` group (`sudo usermod -aG docker ubuntu`)
-4. Clones `danhdanhtuan0308/AQI-MLops` from GitHub (or hard-resets if already cloned)
-5. Copies `.env.example` → `.env` if `.env` doesn't exist yet
-6. Installs nginx config: copies `deploy/nginx.conf` → `/etc/nginx/sites-available/aqi-api`, symlinks into `sites-enabled`, removes default site, tests and restarts nginx
-7. Installs systemd service: copies `deploy/aqi-api.service`, substitutes `__USER__` and `__APP_DIR__` tokens, runs `systemctl daemon-reload` and `systemctl enable aqi-api`
-
-**After the script:**
-```bash
-nano ~/AQI-MLops/.env              # fill in OWM_API_KEY, AWS credentials
-newgrp docker                      # activate docker group in current shell
-cd ~/AQI-MLops && docker compose build
-sudo systemctl start aqi-api
-curl http://localhost:8000/health
-```
-
-**The script does NOT build the image or start the service** — fill in `.env` first.
-
-```bash
-# Run on a fresh instance:
-chmod +x setup_ec2.sh && ./setup_ec2.sh
-```
-
----
-
-## aqi-api.service
-
-systemd unit file — manages the Docker Compose lifecycle for the FastAPI container.
-
-**Key settings:**
-- `ExecStart=/usr/bin/docker compose up` — starts the container defined in `docker-compose.yml`
-- `ExecStop=/usr/bin/docker compose down` — graceful shutdown
-- `After=network.target docker.service`, `Requires=docker.service` — waits for Docker daemon
-- `Restart=on-failure`, `RestartSec=10s` — auto-restarts if compose exits unexpectedly
-- `WorkingDirectory` is set to the repo root (substituted from `__APP_DIR__`)
-
-The container binds port `127.0.0.1:8000` (localhost only). nginx forwards port 80 traffic to it.
-
-**Useful commands:**
-```bash
-sudo systemctl status aqi-api
-sudo systemctl restart aqi-api
-sudo journalctl -u aqi-api -f      # tail systemd logs
-docker compose logs -f             # tail container logs directly
-```
-
----
-
-## nginx.conf
-
-Reverse proxy configuration. Listens on port 80 and forwards all requests to the Docker container at `127.0.0.1:8000`.
-
-**Security headers included:**
-- `X-Content-Type-Options: nosniff`
-- `X-Frame-Options: DENY`
-- `X-XSS-Protection: 1; mode=block`
-
-`proxy_read_timeout 120s` — allows Athena queries (cold start) up to 2 minutes.
-
----
-
-## CD Pipeline Integration
-
-The `cd.yml` workflow SSH-deploys to this instance on every push to `main` that touches `app/**`, `ml/model-registry/**`, `pyproject.toml`, or `uv.lock`. It:
-1. Runs the CI gate (`ci.yml`) first — deploy is blocked if tests fail
-2. SSH: `git fetch origin main && git reset --hard origin/main && git clean -fd` — hard reset (never blocked by local changes)
-3. SSH: `docker compose build` — rebuilds the image from the updated code
-4. SSH: `docker compose up -d` — replaces running container with the new image
-5. SSH: `curl http://localhost:8000/health` — fails the workflow if the service doesn't respond
-
-Required GitHub Secrets: `EC2_SSH_KEY`, `EC2_HOST`, `EC2_USER`.
 
 ---
 

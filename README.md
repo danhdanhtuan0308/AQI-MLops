@@ -8,13 +8,13 @@ Live dashboard: http://3.94.115.44
 
 ## What This Project Does
 
-This system fetches live air quality data every hour for 99 cities around the world, stores it in a data lakehouse on AWS S3 using Apache Iceberg, runs an XGBoost machine learning model to predict the next hour's AQI class for each city, and serves those predictions through a web dashboard with sub-millisecond response times. It also monitors model drift, tracks prediction accuracy over time in a dedicated predictions table, and retrains the model automatically every week.
+This system fetches live air quality data every hour for 99 cities around the world, stores it in a data lakehouse on AWS S3 using Apache Iceberg, runs an XGBoost machine learning model to predict the next hour's AQI class for each city, and serves those predictions through a web dashboard with sub-millisecond response times. It also monitors model drift, tracks prediction accuracy over time in a dedicated predictions table, retrains the model automatically every day, and pushes all observability signals (metrics, traces, logs) directly to Grafana Cloud.
 
 ---
 
 ## System Architecture
 
-The system has three Lambda functions, a FastAPI service on EC2, and a Redis caching layer. Here is how data flows through the system.
+The system has three Lambda functions, a FastAPI service on EC2, a Redis caching layer, and a direct push observability pipeline to Grafana Cloud. Here is how data flows through the system.
 
 **Step 1 — Data Ingestion (Lambda A)**
 
@@ -34,9 +34,9 @@ When a user opens the dashboard and requests a prediction, FastAPI reads the cac
 
 Lambda C runs every hour at 5 minutes past the hour via EventBridge. It reads all records from aqi:pred_buffer in Redis, writes them as a single Parquet file to s3://weather-bulk/predictions/, then runs an INSERT INTO on the Athena predictions Iceberg table to register the records permanently. This builds a historical record of every prediction the model has ever made.
 
-**Step 5 — Model Retraining (GitHub Actions weekly)**
+**Step 5 — Model Retraining (GitHub Actions daily)**
 
-Every Monday at 02:00 UTC, a GitHub Actions workflow SSHes into EC2, runs the full XGBoost training pipeline against the latest Athena data, writes new model artifacts to disk, and calls POST /reload-model to hot-swap the model in memory without any downtime.
+Every day at 05:00 UTC, a GitHub Actions workflow (daily_retrain.yml) runs the CI gate (lint + unit tests), retrains the XGBoost model on the latest Athena data, smoke-tests the new model, uploads the new artifacts to EC2 via SCP, and calls POST /reload-model to hot-swap the model in memory without any downtime.
 
 **Data Flow Summary**
 
@@ -66,8 +66,9 @@ Lambda C (every hour at :05)
 Dashboard request for a city prediction
   FastAPI reads from Redis               (under 1 millisecond)
 
-Every Monday 02:00 UTC
+Every day 05:00 UTC
   GitHub Actions retrains XGBoost on Athena data
+  uploads new artifacts to EC2
   hot-reloads model via POST /reload-model
 ```
 
@@ -78,7 +79,8 @@ Every Monday 02:00 UTC
 ```
 app/
   main.py                     All HTTP routes, Redis caching logic, warm-cache endpoint
-  inference.py                Feature engineering, predict_single, batch_predict
+  inference.py                Feature engineering, predict_single, batch_predict, load_artifacts
+  telemetry.py                Observability: traces, metrics, and logs push to Grafana Cloud
   templates/
     index.html                Dashboard (Alpine.js + Chart.js, no build step)
 
@@ -113,7 +115,7 @@ deploy/
 
 Dockerfile                    Multi-stage build (python:3.12-slim + uv, non-root user)
 docker-compose.yml            Production compose with model-registry volume bind-mount
-.github/workflows/            CI, CD, and weekly retrain workflows
+.github/workflows/            CI, CD, and daily retrain workflows
 ```
 
 ---
@@ -158,7 +160,7 @@ The model is an XGBoost classifier that predicts which AQI class a city will hav
 | Training data | 12 months of hourly readings from all 99 cities |
 | Cross-validated F1 | 0.9425 |
 | Validation F1 | 0.9535 |
-| Retrain schedule | Every Monday at 02:00 UTC via GitHub Actions |
+| Retrain schedule | Every day at 05:00 UTC via GitHub Actions |
 
 ### Features (14 total)
 
@@ -187,7 +189,39 @@ The model is an XGBoost classifier that predicts which AQI class a city will hav
 |----------|---------|------|
 | ci.yml | Every push and pull request | ruff lint then all 52 pytest tests |
 | cd.yml | Push to main touching app/ or ml/ | SSHes to EC2, pulls latest code, rebuilds Docker image, restarts container with --force-recreate |
-| weekly_retrain.yml | Every Monday at 02:00 UTC | Runs CI gate, retrains XGBoost on Athena data, smoke-tests the new model, calls /reload-model |
+| daily_retrain.yml | Every day at 05:00 UTC | Runs CI gate, retrains XGBoost on Athena data, smoke-tests the new model, uploads artifacts to EC2 via SCP, calls /reload-model |
+
+---
+
+## Observability
+
+All three observability signals (metrics, traces, logs) are pushed directly from the FastAPI container to Grafana Cloud over HTTPS. No agents, sidecars, or collectors are deployed on EC2.
+
+| Signal | Protocol | Destination | Details |
+|--------|----------|-------------|---------|
+| Traces | OTLP HTTP | Grafana Cloud Tempo | BatchSpanProcessor pushes per-request spans to /v1/traces |
+| Metrics | OTLP HTTP | Grafana Cloud Mimir | PeriodicExportingMetricReader pushes every 30 seconds to /v1/metrics |
+| System metrics | OTLP HTTP | Grafana Cloud Mimir | CPU utilization and memory usage only (limited to avoid cardinality explosion on Free tier) |
+| Logs | HTTP POST | Grafana Cloud Loki | Non-blocking QueueListener pushes structured log entries |
+
+### Application Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| aqi.predictions.total | Counter | Total AQI predictions served |
+| aqi.cache.ops.total | Counter | Redis cache hits and misses |
+| aqi.warm_cache.seconds | Histogram | Time to run /warm-cache |
+| aqi.athena.queries.total | Counter | Total Athena queries executed |
+| system.cpu.utilization | Gauge | Host CPU utilization (user, system, idle) |
+| system.memory.usage | Gauge | Host memory usage (used, free, available) |
+
+### How It Works
+
+Tracing is set up at module level (immediately after the FastAPI app object is created) so the ASGI middleware is injected before the middleware stack freezes. Metrics push and logging are initialized in the startup event handler.
+
+Authentication uses Basic auth with the Grafana Cloud instance ID and API key, base64-encoded. All configuration is driven by environment variables (see deploy/README.md for the full list).
+
+The implementation lives in app/telemetry.py.
 
 ---
 
@@ -202,6 +236,7 @@ The model is an XGBoost classifier that predicts which AQI class a city will hav
 | Cache | Redis Cloud managed instance, 2-hour TTL for all prediction and history keys |
 | Model artifacts | ml/model-registry/ bind-mounted into Docker container, not baked into the image |
 | Lambda functions | Lambda A (hourly ingest), Lambda B (merge and warm-cache trigger), Lambda C (prediction flush to S3) |
+| Observability | Grafana Cloud (Tempo for traces, Mimir for metrics, Loki for logs) — direct OTLP push from container |
 
 ---
 

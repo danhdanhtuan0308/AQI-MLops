@@ -11,6 +11,7 @@ app/
   __init__.py           Package marker
   main.py               FastAPI app: all routes, Redis helpers, warm-cache logic
   inference.py          Feature engineering, predict_single, batch_predict, load_artifacts
+  telemetry.py          Observability: traces → Tempo, metrics → Mimir, logs → Loki
   templates/
     index.html          Single-page dashboard (Alpine.js + Chart.js, Tailwind CDN)
 ```
@@ -137,104 +138,39 @@ Requires:
 
 ---
 
-## Directory Structure
+## Observability (telemetry.py)
 
-```
-app/
-├── __init__.py           # Package marker
-├── main.py               # FastAPI app — all routes defined here
-├── inference.py          # Feature engineering, predict_single, batch_predict, load_artifacts
-└── templates/
-    └── index.html        # Single-page dashboard (Alpine.js + Chart.js + Tailwind CDN)
-```
+All three observability signals are pushed directly from the FastAPI container to Grafana Cloud. No agents or sidecars are needed.
 
----
+| Signal | Destination | How |
+|--------|-------------|-----|
+| Traces | Grafana Cloud Tempo | OTLPSpanExporter with BatchSpanProcessor, pushed per-request to /v1/traces |
+| Metrics | Grafana Cloud Mimir | OTLPMetricExporter with PeriodicExportingMetricReader, pushed every 30 seconds to /v1/metrics |
+| System metrics | Grafana Cloud Mimir | CPU utilization and memory usage only (limited for Free tier cardinality) |
+| Logs | Grafana Cloud Loki | Custom _LokiHandler with non-blocking QueueListener, pushed via HTTP POST |
 
-## Endpoints
+### Initialization Order
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/` | Serve the interactive dashboard (index.html) |
-| `GET` | `/cities` | List all 99+ cities with coordinates and timezone |
-| `GET` | `/predict/{city_slug}` | Next-hour AQI prediction + per-class probabilities |
-| `GET` | `/history/{city_slug}` | Last N hours of predicted vs actual AQI |
-| `GET` | `/drift/{city_slug}` | Feature drift (recent week vs reference week, z-scores) |
-| `GET` | `/metrics/{city_slug}` | **Live** weighted F1, Precision, Recall (last 7 days by default) |
-| `GET` | `/health` | Service health + model metadata (model type, n_features, n_cities) |
-| `POST` | `/reload-model` | Hot-reload model artifacts from disk without restarting the server |
+1. `setup_tracing(app)` is called at **module level** immediately after `app = FastAPI(...)` — this is required because FastAPIInstrumentor adds ASGI middleware, and the middleware stack freezes once the first request is processed.
+2. `setup_metrics_push()`, `setup_system_metrics()`, and `setup_logging()` are called in the startup event handler.
 
-### `/metrics/{city_slug}` — Live Production Metrics
+### Application Metrics
 
-This is the only metrics endpoint. It uses **Athena ground-truth data** (real observed AQI values) compared against the model's T+1 predictions. It does **not** touch the training set in any way.
+| Metric | Type | Description |
+|--------|------|-------------|
+| aqi.predictions.total | Counter | Total AQI predictions served |
+| aqi.cache.ops.total | Counter | Redis cache hits and misses |
+| aqi.warm_cache.seconds | Histogram | Time to run /warm-cache |
+| aqi.athena.queries.total | Counter | Total Athena queries executed |
 
-Query params:
-- `hours` (int, default=168, max=336) — look-back window in hours. 168 = last 7 days.
+### Environment Variables
 
-Returns:
-```json
-{
-  "city": "Tokyo",
-  "window_hours": 168,
-  "n_predictions": 165,
-  "weighted": { "f1": 0.874, "precision": 0.881, "recall": 0.874 },
-  "per_class": {
-    "1": { "f1": 0.91, "precision": 0.93, "recall": 0.89, "support": 42 },
-    ...
-  },
-  "computed_at": "2026-03-22 21:00 UTC"
-}
-```
-
-Requires ≥ 10 labelled rows in Athena; returns HTTP 422 otherwise (insufficient live data).
-
----
-
-## inference.py
-
-Core ML inference logic — isolated from FastAPI so it can be tested independently.
-
-| Function | Description |
-|---|---|
-| `load_artifacts()` | Loads `model.ubj`, `median.json`, `features.json` from `ml/model-registry/` |
-| `build_feature_vector(row, prev_row, median)` | Engineers 12 features from two consecutive rows |
-| `predict_single(model, median, row, prev_row)` | Returns predicted AQI + per-class probabilities |
-| `batch_predict(model, median, rows)` | Runs predictions over a list of rows, returns predicted+actual pairs |
-
-### Feature list (12 total)
-
-`aqi_lag1`, `pm10_lag1`, `hour_sin`, `hour_cos`, `pm25_ratio`, `co`, `no`, `no2`, `o3`, `so2`, `nh3`, `pm10`
-
----
-
-## Dashboard — index.html
-
-Single-file SPA using Alpine.js (CDN) for reactivity and Chart.js for charts. No build step.
-
-### Tabs
-
-| Tab | Contents |
-|---|---|
-| **Forecast** | City picker, next-hour prediction card, probability bar chart, historical AQI line chart |
-| **Data Drift** | Feature drift scores (z-scores, bar chart), AQI class distribution shift |
-| **System** | API status, model metadata, **Live F1 / Precision / Recall cards**, per-class breakdown table, data freshness, drift summary, auto-refresh countdown, retrain guidance |
-
-### Live Metrics on System Tab
-
-The System tab calls `/metrics/{city_slug}?hours=168` when:
-- The System tab is opened
-- "Refresh Now" is clicked
-- The hourly auto-refresh fires
-
-Metrics display green ≥ 80%, yellow ≥ 60%, red < 60%.
-
----
-
-## Running locally
-
-```bash
-uv run uvicorn app.main:app --reload --port 8000
-```
-
-Then open `http://localhost:8000`.
-
-Requires `ml/model-registry/model.ubj`, `median.json`, `features.json` and a `.env` file with `AWS_*` variables for Athena queries.
+| Variable | Description |
+|----------|-------------|
+| GRAFANA_OTLP_ENDPOINT | OTLP gateway URL (e.g. https://otlp-gateway-prod-us-east-2.grafana.net/otlp) |
+| GRAFANA_OTLP_INSTANCE_ID | Grafana Cloud instance ID |
+| GRAFANA_API_KEY | Grafana Cloud API key (used for all three signals) |
+| GRAFANA_LOKI_URL | Loki push URL (e.g. https://logs-prod-036.grafana.net/loki/api/v1/push) |
+| GRAFANA_LOKI_USER | Loki instance user ID |
+| OTEL_SERVICE_NAME | Service name tag (default: aqi-api) |
+| OTEL_SERVICE_VERSION | Service version tag (default: 1.0) |
