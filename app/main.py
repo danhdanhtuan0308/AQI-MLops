@@ -56,6 +56,12 @@ KNOWN_CITIES: dict[str, dict] = {
 # ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI(title="AQI Prediction API", version="1.0")
 
+# ── Observability: tracing (must be before ASGI stack builds) ────────────────
+# FastAPIInstrumentor.instrument_app() adds middleware — must run at import time,
+# NOT inside a startup event handler (middleware is frozen by then).
+from .telemetry import setup_tracing as _setup_tracing
+_setup_tracing(app)
+
 # ── Observability: Prometheus metrics ─────────────────────────────────────────
 try:
     from prometheus_fastapi_instrumentator import Instrumentator
@@ -130,10 +136,9 @@ def _startup() -> None:
     _cache_feature_importance()
 
     # Observability — direct push to Grafana Cloud (no-op when env vars not set)
-    from .telemetry import setup_logging, setup_metrics_push, setup_system_metrics, setup_tracing
-    setup_tracing(app)
+    from .telemetry import setup_logging, setup_metrics_push, setup_system_metrics
     setup_metrics_push()
-    setup_system_metrics()   # CPU, memory, network, disk — must come after setup_metrics_push()
+    setup_system_metrics()   # CPU, memory — must come after setup_metrics_push()
     setup_logging()
 
 
