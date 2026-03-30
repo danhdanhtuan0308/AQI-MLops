@@ -59,53 +59,19 @@ app = FastAPI(title="AQI Prediction API", version="1.0")
 # ── Observability: Prometheus metrics ─────────────────────────────────────────
 try:
     from prometheus_fastapi_instrumentator import Instrumentator
-    from prometheus_client import Counter, Histogram
 
     # HTTP request metrics (latency, count, status) — auto-instrumented per route
+    # Still exposed on /metrics for local debugging
     Instrumentator(
         should_group_status_codes=False,
         excluded_handlers=["/metrics", "/favicon.ico"],
     ).instrument(app).expose(app, include_in_schema=False)
-
-    # ML-specific custom counters
-    METRIC_PREDICTIONS = Counter(
-        "aqi_predictions_total",
-        "Total AQI predictions served",
-        ["city", "predicted_class", "cache"],
-    )
-    METRIC_CACHE_OPS = Counter(
-        "aqi_cache_ops_total",
-        "Redis cache hits and misses per endpoint",
-        ["endpoint", "result"],
-    )
-    METRIC_WARM_CACHE = Histogram(
-        "aqi_warm_cache_seconds",
-        "Time taken to execute /warm-cache",
-        buckets=[5, 10, 15, 20, 30, 45, 60],
-    )
-    METRIC_ATHENA_QUERIES = Counter(
-        "aqi_athena_queries_total",
-        "Total Athena queries executed",
-    )
-    _METRICS_ENABLED = True
 except ImportError:
-    _METRICS_ENABLED = False
+    pass
 
-    # Stub objects so the rest of the code never needs an `if _METRICS_ENABLED` guard
-    class _Noop:
-        def labels(self, **_): return self
-        def inc(self, *_, **__): pass
-        def observe(self, *_, **__): pass
-        def time(self): return _NoopCtx()
-
-    class _NoopCtx:
-        def __enter__(self): return self
-        def __exit__(self, *_): pass
-
-    METRIC_PREDICTIONS  = _Noop()
-    METRIC_CACHE_OPS    = _Noop()
-    METRIC_WARM_CACHE   = _Noop()
-    METRIC_ATHENA_QUERIES = _Noop()
+# ML-specific custom metrics — pushed to Grafana Cloud via OTLP (see telemetry.py).
+# Access via module attribute so setup_metrics_push() can swap _Noop → real instruments.
+from . import telemetry as _tel
 
 _model  = None
 _median: dict = {}
@@ -163,9 +129,11 @@ def _startup() -> None:
             _redis = None
     _cache_feature_importance()
 
-    # OTel tracing — no-op when OTEL_EXPORTER_OTLP_ENDPOINT is not set
-    from .telemetry import setup_tracing
+    # Observability — direct push to Grafana Cloud (no-op when env vars not set)
+    from .telemetry import setup_logging, setup_metrics_push, setup_tracing
     setup_tracing(app)
+    setup_metrics_push()
+    setup_logging()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -223,7 +191,7 @@ def _validate_city(city_slug: str) -> str:
 def _athena(sql: str) -> pd.DataFrame:
     import awswrangler as wr  # lazy import — keeps startup fast
 
-    METRIC_ATHENA_QUERIES.inc()
+    _tel.METRIC_ATHENA_QUERIES.add(1)
     session = boto3.Session(
         region_name=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
         aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
@@ -260,11 +228,11 @@ def predict_city(city_slug: str) -> JSONResponse:
     cache_key = f"aqi:predict:{slug}"
     cached    = _cache_get(cache_key)
     if cached:
-        METRIC_CACHE_OPS.labels(endpoint="predict", result="hit").inc()
-        METRIC_PREDICTIONS.labels(city=slug, predicted_class=str(cached.get("next_hour", {}).get("predicted_aqi", 0)), cache="hit").inc()
+        _tel.METRIC_CACHE_OPS.add(1, {"endpoint": "predict", "result": "hit"})
+        _tel.METRIC_PREDICTIONS.add(1, {"city": slug, "predicted_class": str(cached.get("next_hour", {}).get("predicted_aqi", 0)), "cache": "hit"})
         return JSONResponse(cached, headers={"X-Cache": "HIT"})
 
-    METRIC_CACHE_OPS.labels(endpoint="predict", result="miss").inc()
+    _tel.METRIC_CACHE_OPS.add(1, {"endpoint": "predict", "result": "miss"})
     df = _athena(f"""
         SELECT timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
         FROM aqi_db.aqi_unified
@@ -296,7 +264,7 @@ def predict_city(city_slug: str) -> JSONResponse:
         "current_color": AQI_META.get(current_aqi, {}).get("color", "#ccc"),
         "next_hour":     result,
     }
-    METRIC_PREDICTIONS.labels(city=slug, predicted_class=str(result["predicted_aqi"]), cache="miss").inc()
+    _tel.METRIC_PREDICTIONS.add(1, {"city": slug, "predicted_class": str(result["predicted_aqi"]), "cache": "miss"})
     _cache_set(cache_key, payload)
     return JSONResponse(payload, headers={"X-Cache": "MISS"})
 
@@ -670,7 +638,7 @@ def warm_cache() -> dict:
         import logging
         logging.getLogger(__name__).warning("warm-cache pipeline flush failed: %s", e)
 
-    METRIC_WARM_CACHE.observe(time.monotonic() - _t0)
+    _tel.METRIC_WARM_CACHE.record(time.monotonic() - _t0)
     return {
         "status":         "ok" if cache_errors == 0 else "partial",
         "cities_cached":  len(cached),
