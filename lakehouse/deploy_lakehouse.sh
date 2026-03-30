@@ -50,7 +50,7 @@ athena_run() {
         fi
         sleep 5
     done
-    echo "   ⏱ $label timed out"; return 1
+    echo " $label timed out"; return 1
 }
 
 # 1. ensure Athena results prefix exists
@@ -160,7 +160,8 @@ cp lakehouse/merge_handler.py "$BUILD_B/handler.py"
 cd "$BUILD_B" && zip -r "$ZIP_B" . > /dev/null && cd - > /dev/null
 echo "   Package: $ZIP_B ($(du -sh $ZIP_B | cut -f1))"
 
-ENV_B="Variables={ATHENA_DB=aqi_db,ATHENA_TABLE=aqi_unified,ATHENA_RESULTS=${ATHENA_RESULTS},S3_BUCKET=${S3_BUCKET}}"
+PREDICT_API_URL="${PREDICT_API_URL:-http://3.94.115.44}"
+ENV_B="Variables={ATHENA_DB=aqi_db,ATHENA_TABLE=aqi_unified,ATHENA_RESULTS=${ATHENA_RESULTS},S3_BUCKET=${S3_BUCKET},PREDICT_API_URL=${PREDICT_API_URL}}"
 
 if aws lambda get-function --function-name "$LAMBDA_B" --region "$REGION" &>/dev/null; then
     echo "── Updating Lambda B..."
@@ -183,7 +184,7 @@ else
         --region "$REGION" > /dev/null
     aws lambda wait function-active --function-name "$LAMBDA_B" --region "$REGION"
 fi
-echo "   ✅ Lambda B ready"
+echo "Lambda B ready"
 
 # 5. grant Lambda A invoke permission on Lambda B
 echo "── Granting Lambda A invoke permission on Lambda B..."
@@ -255,11 +256,11 @@ else
         --region "$REGION" > /dev/null
     echo "   EventBridge rule created: cron(5 * * * ? *)"
 fi
-echo "   ✅ Lambda C ready"
-echo "   ⚠️  Remember: set REDIS_URL env var on Lambda C in the AWS console"
+echo "  Lambda C ready"
+echo "  Remember: set REDIS_URL env var on Lambda C in the AWS console"
 
 echo ""
-echo "✅ Lakehouse deployment complete!"
+echo "Lakehouse deployment complete!"
 echo ""
 echo "── Next: run the one-time backfill:"
 echo "   uv run python lakehouse/backfill.py"
