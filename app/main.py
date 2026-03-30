@@ -30,6 +30,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from sklearn.metrics import precision_recall_fscore_support
 
+from . import telemetry as _tel
 from .inference import (
     AQI_META,
     CITY_TIMEZONES,
@@ -39,6 +40,7 @@ from .inference import (
     load_artifacts,
     predict_single,
 )
+from .telemetry import setup_tracing as _setup_tracing
 
 # ── Bootstrap ─────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.parent
@@ -59,7 +61,6 @@ app = FastAPI(title="AQI Prediction API", version="1.0")
 # ── Observability: tracing (must be before ASGI stack builds) ────────────────
 # FastAPIInstrumentor.instrument_app() adds middleware — must run at import time,
 # NOT inside a startup event handler (middleware is frozen by then).
-from .telemetry import setup_tracing as _setup_tracing
 _setup_tracing(app)
 
 # ── Observability: Prometheus metrics ─────────────────────────────────────────
@@ -77,7 +78,6 @@ except ImportError:
 
 # ML-specific custom metrics — pushed to Grafana Cloud via OTLP (see telemetry.py).
 # Access via module attribute so setup_metrics_push() can swap _Noop → real instruments.
-from . import telemetry as _tel
 
 _model  = None
 _median: dict = {}
