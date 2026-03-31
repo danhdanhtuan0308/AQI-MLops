@@ -141,6 +141,27 @@ def _startup() -> None:
     setup_system_metrics()   # CPU, memory — must come after setup_metrics_push()
     setup_logging()
 
+    # Self-warming background loop — keeps Redis populated independently of Lambda B.
+    # Runs every WARM_INTERVAL seconds (default 3600 = 1 hour).
+    # First warm happens 10s after startup so the cache is hot immediately.
+    _warm_interval = int(os.environ.get("WARM_INTERVAL_SEC", "3600"))
+    threading.Thread(target=_warm_loop, args=(_warm_interval,), daemon=True).start()
+
+
+def _warm_loop(interval: int) -> None:
+    """Periodically call warm_cache() to keep Redis populated."""
+    import logging
+    log = logging.getLogger(__name__)
+    time.sleep(10)  # let startup finish, model load, etc.
+    while True:
+        try:
+            log.info("self-warm: triggering warm_cache()")
+            result = warm_cache()
+            log.info("self-warm: done — %s cities, %s keys", result.get("cities_cached"), result.get("keys_written"))
+        except Exception as e:
+            log.warning("self-warm: failed — %s", e)
+        time.sleep(interval)
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
