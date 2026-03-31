@@ -150,16 +150,14 @@ def _startup() -> None:
 
 def _warm_loop(interval: int) -> None:
     """Periodically call warm_cache() to keep Redis populated."""
-    import logging
-    log = logging.getLogger(__name__)
     time.sleep(10)  # let startup finish, model load, etc.
     while True:
         try:
-            log.info("self-warm: triggering warm_cache()")
+            print("[self-warm] triggering warm_cache()…", flush=True)
             result = warm_cache()
-            log.info("self-warm: done — %s cities, %s keys", result.get("cities_cached"), result.get("keys_written"))
+            print(f"[self-warm] done — {result.get('cities_cached')} cities, {result.get('keys_written')} keys", flush=True)
         except Exception as e:
-            log.warning("self-warm: failed — %s", e)
+            print(f"[self-warm] failed — {e}", flush=True)
         time.sleep(interval)
 
 
