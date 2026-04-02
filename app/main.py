@@ -535,6 +535,66 @@ def city_metrics(
     return JSONResponse(metrics_payload, headers={"X-Cache": "MISS"})
 
 
+@app.get("/accuracy-trend/{city_slug}", summary="Week-over-week accuracy trend for concept drift detection")
+def accuracy_trend(
+    city_slug: str,
+    weeks: int = Query(default=8, ge=2, le=12, description="Number of weeks to look back"),
+) -> dict:
+    """
+    Returns daily accuracy (% correct predictions) over the last N weeks.
+    A declining trend indicates concept drift.
+    """
+    slug      = _validate_city(city_slug)
+    cache_key = f"aqi:accuracy_trend:{slug}:{weeks}"
+    cached    = _cache_get(cache_key)
+    if cached:
+        return JSONResponse(cached, headers={"X-Cache": "HIT"})
+
+    df = _athena(f"""
+        SELECT
+            DATE_TRUNC('day', p.forecast_for) AS day,
+            COUNT(*) AS total,
+            SUM(CASE WHEN p.predicted = u.aqi THEN 1 ELSE 0 END) AS correct
+        FROM aqi_db.predictions p
+        JOIN aqi_db.aqi_unified u
+            ON p.city_slug = u.city_slug
+           AND p.forecast_for = u.timestamp
+        WHERE p.city_slug = '{slug}'
+          AND p.forecast_for >= NOW() - INTERVAL '{weeks * 7}' DAY
+        GROUP BY DATE_TRUNC('day', p.forecast_for)
+        ORDER BY day ASC
+    """)
+
+    if df.empty or len(df) < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="Not enough ground-truth data to compute accuracy trend.",
+        )
+
+    df["accuracy"] = (df["correct"].astype(float) / df["total"].astype(float)).round(4)
+
+    trend = df[["day", "total", "accuracy"]].copy()
+    trend["day"] = trend["day"].astype(str)
+
+    # Week-over-week delta: compare last 7 days vs prior 7 days
+    last_week  = df.tail(7)["accuracy"].mean()
+    prior_week = df.iloc[-14:-7]["accuracy"].mean() if len(df) >= 14 else None
+    wow_delta  = round(float(last_week - prior_week), 4) if prior_week is not None else None
+
+    payload = {
+        "city":          KNOWN_CITIES[slug]["name"],
+        "weeks":         weeks,
+        "trend":         trend.to_dict("records"),
+        "last_7d_accuracy":  round(float(last_week), 4),
+        "prior_7d_accuracy": round(float(prior_week), 4) if prior_week is not None else None,
+        "wow_delta":         wow_delta,
+        "concept_drift_flag": wow_delta is not None and wow_delta < -0.10,
+        "computed_at": datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+    }
+    _cache_set(cache_key, payload)
+    return JSONResponse(payload, headers={"X-Cache": "MISS"})
+
+
 @app.post("/warm-cache", summary="Bulk-load 7-day history for all cities into Redis (called by Lambda B after each hourly merge)")
 def warm_cache() -> dict:
     """
