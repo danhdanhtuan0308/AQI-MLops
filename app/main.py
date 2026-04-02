@@ -542,6 +542,8 @@ def accuracy_trend(
 ) -> dict:
     """
     Returns daily accuracy (% correct predictions) over the last N weeks.
+    Computed by replaying the model on aqi_unified — same approach as /metrics,
+    so it works without requiring the predictions Iceberg table to have data.
     A declining trend indicates concept drift.
     """
     slug      = _validate_city(city_slug)
@@ -550,56 +552,64 @@ def accuracy_trend(
     if cached:
         return JSONResponse(cached, headers={"X-Cache": "HIT"})
 
-    days = weeks * 7
+    hours = weeks * 7 * 24 + 2   # +2 so the earliest window has a lag row
     try:
         df = _athena(f"""
-            WITH preds AS (
-                SELECT forecast_for, predicted
-                FROM aqi_db.predictions
-                WHERE city_slug = '{slug}'
-                  AND forecast_for >= current_timestamp - INTERVAL '{days}' DAY
-            ),
-            actuals AS (
-                SELECT timestamp, aqi
-                FROM aqi_db.aqi_unified
-                WHERE city_slug = '{slug}'
-                  AND timestamp >= current_timestamp - INTERVAL '{days}' DAY
-            )
-            SELECT
-                date_trunc('day', p.forecast_for) AS day,
-                COUNT(*) AS total,
-                SUM(CASE WHEN p.predicted = a.aqi THEN 1 ELSE 0 END) AS correct
-            FROM preds p
-            JOIN actuals a ON p.forecast_for = a.timestamp
-            GROUP BY date_trunc('day', p.forecast_for)
-            ORDER BY day ASC
+            SELECT timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
+            FROM aqi_db.aqi_unified
+            WHERE city_slug = '{slug}'
+              AND timestamp >= current_timestamp - interval '{hours}' hour
+            ORDER BY timestamp ASC
         """)
     except Exception:
         raise HTTPException(status_code=503, detail="Athena query failed — try again shortly.")
 
-    if df.empty or len(df) < 2:
+    if df.empty or len(df) < 10:
         raise HTTPException(
             status_code=422,
-            detail="Not enough ground-truth data to compute accuracy trend.",
+            detail="Not enough historical data to compute accuracy trend.",
         )
 
-    df["accuracy"] = (df["correct"].astype(float) / df["total"].astype(float)).round(4)
+    df["aqi"] = pd.to_numeric(df["aqi"], errors="coerce").clip(upper=5)
+    rows = df.to_dict("records")
+    predictions = batch_predict(_model, _median, rows)
 
-    trend = df[["day", "total", "accuracy"]].copy()
-    trend["day"] = trend["day"].astype(str)
+    # Group by day — use the row_next timestamp (when the prediction is FOR)
+    valid = [r for r in predictions if r["actual"] is not None and r.get("timestamp")]
+    if not valid:
+        raise HTTPException(status_code=422, detail="No labelled rows available for trend.")
 
-    # Week-over-week delta: compare last 7 days vs prior 7 days
-    last_week  = df.tail(7)["accuracy"].mean()
-    prior_week = df.iloc[-14:-7]["accuracy"].mean() if len(df) >= 14 else None
-    wow_delta  = round(float(last_week - prior_week), 4) if prior_week is not None else None
+    import collections
+    daily: dict[str, dict] = collections.defaultdict(lambda: {"total": 0, "correct": 0})
+    for r in valid:
+        try:
+            day = str(pd.Timestamp(r["timestamp"]).date())
+        except Exception:
+            continue
+        daily[day]["total"]   += 1
+        daily[day]["correct"] += int(r["predicted"] == r["actual"])
+
+    if len(daily) < 2:
+        raise HTTPException(status_code=422, detail="Need at least 2 days of data for trend.")
+
+    trend_rows = sorted(
+        [{"day": d, "total": v["total"], "accuracy": round(v["correct"] / v["total"], 4)}
+         for d, v in daily.items()],
+        key=lambda x: x["day"],
+    )
+
+    accuracies  = [r["accuracy"] for r in trend_rows]
+    last_week   = float(pd.Series(accuracies[-7:]).mean())
+    prior_week  = float(pd.Series(accuracies[-14:-7]).mean()) if len(accuracies) >= 14 else None
+    wow_delta   = round(last_week - prior_week, 4) if prior_week is not None else None
 
     payload = {
-        "city":          KNOWN_CITIES[slug]["name"],
-        "weeks":         weeks,
-        "trend":         trend.to_dict("records"),
-        "last_7d_accuracy":  round(float(last_week), 4),
-        "prior_7d_accuracy": round(float(prior_week), 4) if prior_week is not None else None,
-        "wow_delta":         wow_delta,
+        "city":               KNOWN_CITIES[slug]["name"],
+        "weeks":              weeks,
+        "trend":              trend_rows,
+        "last_7d_accuracy":   round(last_week, 4),
+        "prior_7d_accuracy":  round(prior_week, 4) if prior_week is not None else None,
+        "wow_delta":          wow_delta,
         "concept_drift_flag": wow_delta is not None and wow_delta < -0.10,
         "computed_at": datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     }
