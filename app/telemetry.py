@@ -1,23 +1,4 @@
-"""
-Observability — push traces, metrics, and logs directly to Grafana Cloud APIs.
 
-All 3 signals use the same OTLP gateway endpoint — no separate agents on EC2.
-
-Metrics → Grafana Cloud Mimir  (OTLP HTTP, pushed every 30s)
-Traces  → Grafana Cloud Tempo  (OTLP HTTP, per request)
-Logs    → Grafana Cloud Loki   (HTTP POST, async queue)
-
-Required env vars (from Grafana Cloud → Connections → OpenTelemetry → Direct):
-    GRAFANA_API_KEY           access-policy token
-    GRAFANA_OTLP_ENDPOINT     e.g. https://otlp-gateway-prod-us-east-2.grafana.net/otlp
-    GRAFANA_OTLP_INSTANCE_ID  numeric instance ID shown on the OTel setup page
-
-Optional (for logs):
-    GRAFANA_LOKI_URL          e.g. https://logs-prod-XXX.grafana.net/loki/api/v1/push
-    GRAFANA_LOKI_USER         numeric Loki user ID
-
-No-op (safe) when env vars are absent or packages are not installed.
-"""
 from __future__ import annotations
 
 import json

@@ -5,6 +5,8 @@ End-to-end MLOps pipeline for real-time Air Quality Index prediction across 99 g
 Live dashboard: http://3.94.115.44
 
 ---
+## Overview Architecture 
+![alt text](image-1.png)
 
 ## What This Project Does
 

@@ -1,0 +1,33 @@
+random_search:
+  best_params:
+    colsample_bytree: 0.7615620385480832
+    gamma: 0.8555689853447116
+    learning_rate: 0.07867511656638483
+    max_delta_step: 0
+    max_depth: 6
+    min_child_weight: 14
+    n_estimators: 579
+    reg_alpha: 0.9279975460676301
+    reg_lambda: 2.7776410342244944
+    subsample: 0.6413167347657506
+  best_cv_f1: 0.943441
+  trials: 20
+  cv_folds: 3
+bayes_search:
+  best_params:
+    colsample_bytree: 0.85
+    gamma: 0.05
+    learning_rate: 0.11999999999999998
+    max_delta_step: 0
+    max_depth: 5
+    min_child_weight: 3
+    n_estimators: 403
+    reg_alpha: 0.05
+    reg_lambda: 4.433583371566179
+    subsample: 0.6
+  best_cv_f1: 0.944024
+  trials: 20
+  cv_folds: 3
+selected_model:
+  name: "XGBoost Random Search"
+  validation_f1: 0.951702
