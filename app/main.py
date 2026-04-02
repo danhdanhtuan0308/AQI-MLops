@@ -731,6 +731,43 @@ def warm_cache() -> dict:
                     }
                     pipe_entries.append((f"aqi:metrics:{slug}:{h}", json.dumps(metrics_payload, default=str)))
 
+        # Accuracy trend (concept drift) — reuse `history` from the block above
+        # We have up to 340 hours (~14 days); store under key :8 so the default
+        # frontend request (weeks=8) gets a Redis HIT immediately.
+        valid_trend = [r for r in history if r["actual"] is not None and r.get("timestamp")] if len(rows) >= 3 else []
+        if len(valid_trend) >= 10:
+            import collections as _col
+            daily: dict = _col.defaultdict(lambda: {"total": 0, "correct": 0})
+            for r in valid_trend:
+                try:
+                    day = str(pd.Timestamp(r["timestamp"]).date())
+                except Exception:
+                    continue
+                daily[day]["total"]   += 1
+                daily[day]["correct"] += int(r["predicted"] == r["actual"])
+            if len(daily) >= 2:
+                trend_rows = sorted(
+                    [{"day": d, "total": v["total"],
+                      "accuracy": round(v["correct"] / v["total"], 4)}
+                     for d, v in daily.items()],
+                    key=lambda x: x["day"],
+                )
+                accs       = [t["accuracy"] for t in trend_rows]
+                last_week  = float(pd.Series(accs[-7:]).mean())
+                prior_week = float(pd.Series(accs[-14:-7]).mean()) if len(accs) >= 14 else None
+                wow_delta  = round(last_week - prior_week, 4) if prior_week is not None else None
+                acc_payload = {
+                    "city":               KNOWN_CITIES[slug]["name"],
+                    "weeks":              8,
+                    "trend":              trend_rows,
+                    "last_7d_accuracy":   round(last_week, 4),
+                    "prior_7d_accuracy":  round(prior_week, 4) if prior_week is not None else None,
+                    "wow_delta":          wow_delta,
+                    "concept_drift_flag": wow_delta is not None and wow_delta < -0.10,
+                    "computed_at": datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                }
+                pipe_entries.append((f"aqi:accuracy_trend:{slug}:8", json.dumps(acc_payload, default=str)))
+
     # Single pipeline flush — one TCP round-trip for all SETEX + RPUSH commands
     cache_errors = 0
     try:
