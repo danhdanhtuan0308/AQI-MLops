@@ -332,6 +332,64 @@
         </table>
       </section>
 
+      <!-- Accuracy Trend Chart (Concept Drift) -->
+      <section class="rounded-2xl p-5 border border-gray-800" style="background:#0d1224">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h2 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">
+              Accuracy Trend &mdash; Concept Drift Detection
+            </h2>
+            <p class="text-[11px] text-gray-600 mt-0.5">Daily exact-match accuracy over last 8 weeks. Declining trend = concept drift.</p>
+          </div>
+          <span x-show="accTrend?.concept_drift_flag"
+                class="text-xs font-bold px-3 py-1 rounded-full bg-red-900/60 text-red-400 border border-red-700 animate-pulse">
+            ⚠ Concept Drift Detected
+          </span>
+          <span x-show="accTrend && !accTrend.concept_drift_flag"
+                class="text-xs font-semibold px-3 py-1 rounded-full bg-green-900/40 text-green-400 border border-green-800">
+            Stable
+          </span>
+        </div>
+
+        <!-- stats row -->
+        <div x-show="accTrend" x-transition class="flex gap-6 mb-4 text-sm">
+          <div>
+            <p class="text-[10px] text-gray-500 uppercase tracking-wider">Last 7d</p>
+            <p class="font-bold text-lg"
+               :class="accTrend?.last_7d_accuracy >= 0.8 ? 'text-green-400' : accTrend?.last_7d_accuracy >= 0.6 ? 'text-yellow-400' : 'text-red-400'"
+               x-text="accTrend ? (accTrend.last_7d_accuracy * 100).toFixed(1) + '%' : '—'"></p>
+          </div>
+          <div>
+            <p class="text-[10px] text-gray-500 uppercase tracking-wider">Prior 7d</p>
+            <p class="font-bold text-lg text-gray-400"
+               x-text="accTrend?.prior_7d_accuracy !== null ? (accTrend.prior_7d_accuracy * 100).toFixed(1) + '%' : '—'"></p>
+          </div>
+          <div>
+            <p class="text-[10px] text-gray-500 uppercase tracking-wider">WoW Δ</p>
+            <p class="font-bold text-lg"
+               :class="(accTrend?.wow_delta || 0) >= 0 ? 'text-green-400' : Math.abs(accTrend?.wow_delta || 0) > 0.1 ? 'text-red-400' : 'text-yellow-400'"
+               x-text="accTrend?.wow_delta !== null ? ((accTrend.wow_delta >= 0 ? '+' : '') + (accTrend.wow_delta * 100).toFixed(1) + '%') : '—'"></p>
+          </div>
+        </div>
+
+        <div x-show="accTrendLoading" class="flex items-center justify-center py-16 text-gray-500 gap-3">
+          <svg class="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+          </svg>
+          Loading accuracy trend…
+        </div>
+        <div x-show="!accTrend && !accTrendLoading"
+             class="flex flex-col items-center justify-center py-12 text-gray-700 text-sm gap-1">
+          <span>Select a city and open Data Drift tab to load trend</span>
+          <span class="text-xs text-gray-800">Requires ground-truth data in Athena predictions table</span>
+        </div>
+
+        <div x-show="accTrend && !accTrendLoading" x-transition class="h-56">
+          <canvas id="accTrendChart"></canvas>
+        </div>
+      </section>
+
     </div><!-- /drift -->
 
     <!-- ── METRICS TAB ─────────────────────────────────────────────────────── -->
@@ -698,6 +756,12 @@
       driftWindow:       '1d',
       driftWindowLoaded: null,
 
+      // accuracy trend state
+      accTrend:          null,
+      accTrendCity:      null,
+      accTrendLoading:   false,
+      _accTrendChart:    null,
+
       // feature importance state
       featImp:             null,
       featImpHistory:      null,
@@ -747,7 +811,7 @@
       setView(v) {
         this.activeView = v
         history.pushState({}, '', '?view=' + v)
-        if (v === 'drift')   this.fetchDrift()
+        if (v === 'drift')   { this.fetchDrift(); this.fetchAccuracyTrend() }
         if (v === 'metrics') { this.fetchMeta(); this.fetchLiveMetrics() }
         if (v === 'model')   this.fetchFeatImp()
       },
@@ -757,7 +821,7 @@
         await this.fetchMeta()
         this._startAutoRefresh()
         // If page was loaded with ?view=drift or ?view=metrics, trigger data load
-        if (this.activeView === 'drift')   this.fetchDrift()
+        if (this.activeView === 'drift')   { this.fetchDrift(); this.fetchAccuracyTrend() }
         if (this.activeView === 'metrics') this.fetchLiveMetrics()
       },
 
@@ -813,7 +877,7 @@
           this.lastUpdated = new Date().toLocaleTimeString()
           this._computeAccuracy()
           // Reset drift cache when city changes
-          if (this.driftCity !== this.selectedCity) { this.drift = null; this.driftCity = null; this.driftWindowLoaded = null }
+          if (this.driftCity !== this.selectedCity) { this.drift = null; this.driftCity = null; this.driftWindowLoaded = null; this.accTrend = null; this.accTrendCity = null }
           if (this.metricsCity !== this.selectedCity) { this.liveMetrics = null; this.metricsCity = null }
 
           // Wait for Alpine's x-transition (150ms) to finish showing the canvas
@@ -1199,6 +1263,95 @@
         } finally {
           this.metricsLoading = false
         }
+      },
+
+      async fetchAccuracyTrend() {
+        if (!this.selectedCity) return
+        if (this.accTrendCity === this.selectedCity && this.accTrend) return
+        this.accTrendLoading = true
+        this.accTrend = null
+        try {
+          const res = await fetch(`/accuracy-trend/${this.selectedCity}?weeks=8`)
+          if (!res.ok) { this.accTrendLoading = false; return }
+          this.accTrend     = await res.json()
+          this.accTrendCity = this.selectedCity
+          this.accTrendLoading = false
+          await new Promise(r => setTimeout(r, 250))
+          this._renderAccTrendChart()
+        } catch(e) {
+          this.accTrendLoading = false
+        }
+      },
+
+      _renderAccTrendChart() {
+        if (!this.accTrend?.trend?.length) return
+        const labels   = this.accTrend.trend.map(r => r.day)
+        const values   = this.accTrend.trend.map(r => +(r.accuracy * 100).toFixed(1))
+        const last7    = +(this.accTrend.last_7d_accuracy  * 100).toFixed(1)
+        const prior7   = this.accTrend.prior_7d_accuracy !== null
+                           ? +(this.accTrend.prior_7d_accuracy * 100).toFixed(1)
+                           : null
+        const lineColor = this.accTrend.concept_drift_flag ? '#ef4444' : '#34d399'
+
+        const prev = Chart.getChart('accTrendChart'); if (prev) prev.destroy()
+        const ctx  = document.getElementById('accTrendChart')
+        if (!ctx) return
+
+        const datasets = [
+          {
+            label:           'Daily Accuracy',
+            data:            values,
+            borderColor:     lineColor,
+            backgroundColor: lineColor + '22',
+            fill:            true,
+            tension:         0.3,
+            pointRadius:     3,
+            borderWidth:     2,
+          },
+          {
+            label:           'Last 7d avg',
+            data:            Array(labels.length).fill(last7),
+            borderColor:     '#60a5fa',
+            borderDash:      [5, 4],
+            borderWidth:     1.5,
+            pointRadius:     0,
+            fill:            false,
+          },
+        ]
+        if (prior7 !== null) {
+          datasets.push({
+            label:       'Prior 7d avg',
+            data:        Array(labels.length).fill(prior7),
+            borderColor: '#9ca3af',
+            borderDash:  [3, 3],
+            borderWidth: 1.5,
+            pointRadius: 0,
+            fill:        false,
+          })
+        }
+
+        this._accTrendChart = new Chart(ctx.getContext('2d'), {
+          type: 'line',
+          data: { labels, datasets },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { labels: { color: '#9ca3af', font: { size: 11 }, boxWidth: 12 } },
+              tooltip: { callbacks: { label: c => ` ${c.dataset.label}: ${c.parsed.y.toFixed(1)}%` } },
+            },
+            scales: {
+              x: { grid: { color: '#1a2035' }, ticks: { color: '#6b7280', font: { size: 10 }, maxTicksLimit: 10 } },
+              y: {
+                min: 0, max: 100,
+                grid:  { color: '#1a2035' },
+                ticks: { color: '#9ca3af', callback: v => v + '%' },
+                title: { display: true, text: 'Accuracy (%)', color: '#6b7280', font: { size: 11 } },
+              },
+            },
+          },
+        })
+        this._accTrendChart.resize()
       },
 
       async fetchFeatImp() {
