@@ -879,6 +879,8 @@
           // Reset drift cache when city changes
           if (this.driftCity !== this.selectedCity) { this.drift = null; this.driftCity = null; this.driftWindowLoaded = null; this.accTrend = null; this.accTrendCity = null }
           if (this.metricsCity !== this.selectedCity) { this.liveMetrics = null; this.metricsCity = null }
+          // If drift tab is already open, auto-fetch drift + accuracy trend for new city
+          if (this.activeView === 'drift') { this.fetchDrift(); this.fetchAccuracyTrend() }
 
           // Wait for Alpine's x-transition (150ms) to finish showing the canvas
           // sections before Chart.js queries their dimensions.
