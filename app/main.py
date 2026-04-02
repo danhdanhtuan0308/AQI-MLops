@@ -550,20 +550,32 @@ def accuracy_trend(
     if cached:
         return JSONResponse(cached, headers={"X-Cache": "HIT"})
 
-    df = _athena(f"""
-        SELECT
-            DATE_TRUNC('day', p.forecast_for) AS day,
-            COUNT(*) AS total,
-            SUM(CASE WHEN p.predicted = u.aqi THEN 1 ELSE 0 END) AS correct
-        FROM aqi_db.predictions p
-        JOIN aqi_db.aqi_unified u
-            ON p.city_slug = u.city_slug
-           AND p.forecast_for = u.timestamp
-        WHERE p.city_slug = '{slug}'
-          AND p.forecast_for >= NOW() - INTERVAL '{weeks * 7}' DAY
-        GROUP BY DATE_TRUNC('day', p.forecast_for)
-        ORDER BY day ASC
-    """)
+    days = weeks * 7
+    try:
+        df = _athena(f"""
+            WITH preds AS (
+                SELECT forecast_for, predicted
+                FROM aqi_db.predictions
+                WHERE city_slug = '{slug}'
+                  AND forecast_for >= current_timestamp - INTERVAL '{days}' DAY
+            ),
+            actuals AS (
+                SELECT timestamp, aqi
+                FROM aqi_db.aqi_unified
+                WHERE city_slug = '{slug}'
+                  AND timestamp >= current_timestamp - INTERVAL '{days}' DAY
+            )
+            SELECT
+                date_trunc('day', p.forecast_for) AS day,
+                COUNT(*) AS total,
+                SUM(CASE WHEN p.predicted = a.aqi THEN 1 ELSE 0 END) AS correct
+            FROM preds p
+            JOIN actuals a ON p.forecast_for = a.timestamp
+            GROUP BY date_trunc('day', p.forecast_for)
+            ORDER BY day ASC
+        """)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Athena query failed — try again shortly.")
 
     if df.empty or len(df) < 2:
         raise HTTPException(

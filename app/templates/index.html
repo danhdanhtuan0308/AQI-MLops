@@ -1272,8 +1272,11 @@
         if (this.accTrendCity === this.selectedCity && this.accTrend) return
         this.accTrendLoading = true
         this.accTrend = null
+        const ctrl  = new AbortController()
+        const timer = setTimeout(() => ctrl.abort(), 30000)
         try {
-          const res = await fetch(`/accuracy-trend/${this.selectedCity}?weeks=8`)
+          const res = await fetch(`/accuracy-trend/${this.selectedCity}?weeks=8`, { signal: ctrl.signal })
+          clearTimeout(timer)
           if (!res.ok) { this.accTrendLoading = false; return }
           this.accTrend     = await res.json()
           this.accTrendCity = this.selectedCity
@@ -1281,6 +1284,7 @@
           await new Promise(r => setTimeout(r, 250))
           this._renderAccTrendChart()
         } catch(e) {
+          clearTimeout(timer)
           this.accTrendLoading = false
         }
       },
