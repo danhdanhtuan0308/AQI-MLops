@@ -1,6 +1,5 @@
 {
   "features": [
-    "aqi_lag1",
     "pm10_lag1",
     "aqi_delta_1h",
     "pm10_delta_1h",
