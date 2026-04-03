@@ -436,14 +436,14 @@
           <p class="text-xs text-gray-600" x-text="'Target: ' + (meta?.target || '—')"></p>
         </div>
 
-        <!-- Accuracy / data freshness (city-dependent) -->
+        <!-- Global weighted F1 — from /model-metrics (all 99 cities) -->
         <div class="rounded-2xl p-5 border border-gray-800 space-y-1" style="background:#0d1224">
-          <p class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Forecast Accuracy</p>
+          <p class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Global Weighted F1</p>
           <p class="font-black text-3xl"
-             :class="accuracy >= 90 ? 'text-green-400' : accuracy >= 70 ? 'text-yellow-400' : 'text-red-400'"
-             x-text="accuracy !== null ? accuracy + '%' : '—'"></p>
-          <p class="text-xs text-gray-500" x-text="prediction ? 'Exact match / last ' + history.filter(r=>r.actual!==null).length + ' h' : 'Run Forecast to compute'"></p>
-          <p class="text-xs text-gray-600" x-text="prediction ? 'City: ' + prediction.city : ''"></p>
+             :class="liveMetrics ? (liveMetrics.weighted.f1 >= 0.8 ? 'text-green-400' : liveMetrics.weighted.f1 >= 0.6 ? 'text-yellow-400' : 'text-red-400') : 'text-gray-700'"
+             x-text="liveMetrics ? (liveMetrics.weighted.f1 * 100).toFixed(1) + '%' : (metricsLoading ? '\u2026' : '\u2014')"></p>
+          <p class="text-xs text-gray-500" x-text="liveMetrics ? liveMetrics.n_predictions + ' predictions · last ' + metricsHours + 'h' : 'All 99 cities pooled'"></p>
+          <p class="text-xs text-gray-600">All 99 cities &mdash; no city filter</p>
         </div>
 
       </div>
