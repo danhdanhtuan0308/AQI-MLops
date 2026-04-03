@@ -224,7 +224,7 @@
       </div>
       <div x-show="!drift && !driftLoading"
            class="flex flex-col items-center justify-center py-20 text-gray-700 gap-2">
-        <span class="text-sm">Select a city and click the Data Drift tab to load drift analysis</span>
+        <span class="text-sm">Click the Data Drift tab to load global drift analysis</span>
       </div>
 
       <!-- Info bar -->
@@ -235,7 +235,7 @@
            x-text="driftWindow === '1d' ? 'Daily comparison \u2014 today vs yesterday' : 'Weekly comparison \u2014 this week vs prior week'"
         ></p>
         <p>
-          <span class="text-gray-500 font-semibold uppercase tracking-wider">City:</span>
+          <span class="text-gray-500 font-semibold uppercase tracking-wider">Scope:</span>
           <span class="text-white ml-2" x-text="drift?.city"></span>
         </p>
         <p>
@@ -876,11 +876,12 @@
 
           this.lastUpdated = new Date().toLocaleTimeString()
           this._computeAccuracy()
-          // Reset drift cache when city changes
-          if (this.driftCity !== this.selectedCity) { this.drift = null; this.driftCity = null; this.driftWindowLoaded = null; this.accTrend = null; this.accTrendCity = null }
+          // Reset per-city caches when city changes
+          if (this.driftWindowLoaded !== null && false) { /* drift is global, never invalidated by city */ }
+          if (this.accTrendCity !== this.selectedCity) { this.accTrend = null; this.accTrendCity = null }
           if (this.metricsCity !== this.selectedCity) { this.liveMetrics = null; this.metricsCity = null }
-          // If drift tab is already open, auto-fetch drift + accuracy trend for new city
-          if (this.activeView === 'drift') { this.fetchDrift(); this.fetchAccuracyTrend() }
+          // If drift tab is already open, auto-fetch accuracy trend for new city (drift is already loaded)
+          if (this.activeView === 'drift') { this.fetchAccuracyTrend() }
 
           // Wait for Alpine's x-transition (150ms) to finish showing the canvas
           // sections before Chart.js queries their dimensions.
@@ -1099,17 +1100,15 @@
       },
 
       async fetchDrift() {
-        if (!this.selectedCity) return
-        // Cached: same city and same window
-        if (this.driftCity === this.selectedCity && this.driftWindowLoaded === this.driftWindow && this.drift) return
+        // No city required — drift is always global (one model = one global drift)
+        if (this.driftWindowLoaded === this.driftWindow && this.drift) return
         this.driftLoading = true
         this.drift = null
         this.error = ''
         try {
-          const res = await fetch(`/drift/${this.selectedCity}?window=${this.driftWindow}`)
+          const res = await fetch(`/drift?window=${this.driftWindow}`)
           if (!res.ok) { let d = 'Drift request failed'; try { d = (await res.json()).detail || d } catch {}; throw new Error(d) }
           this.drift             = await res.json()
-          this.driftCity         = this.selectedCity
           this.driftWindowLoaded = this.driftWindow
           // IMPORTANT: set driftLoading=false BEFORE rendering so x-show sections are visible
           this.driftLoading = false
@@ -1498,7 +1497,7 @@
         // Full data refresh every 60 minutes
         this._refreshTimer = setInterval(async () => {
           if (this.selectedCity) await this.fetchAll()
-          if (this.driftCity)    await this.fetchDrift()
+          await this.fetchDrift()
           await this.fetchMeta()
           if (this.selectedCity) { this.metricsCity = null; await this.fetchLiveMetrics() }
           this.nextRefreshSec = 3600

@@ -327,7 +327,8 @@ def city_history(
 
 
 def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1,
-                         model=None, median=None) -> dict | None:
+                         model=None, median=None,
+                         display_name: str | None = None) -> dict | None:
     """
     Compute drift from a pre-fetched DataFrame.
     `window_days=1` compares today vs yesterday; `window_days=7` compares this week vs prior week.
@@ -408,8 +409,8 @@ def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1,
             }
 
     return {
-        "city":                    KNOWN_CITIES[slug]["name"],
-        "timezone":                CITY_TIMEZONES.get(slug, "UTC"),
+        "city":                    display_name if display_name else KNOWN_CITIES[slug]["name"],
+        "timezone":                "UTC" if display_name else CITY_TIMEZONES.get(slug, "UTC"),
         "ref_rows":                len(ref_df),
         "recent_rows":             len(recent_df),
         "ref_window":              f"{ref_df['timestamp'].min()} to {ref_df['timestamp'].max()} ({ref_label})",
@@ -454,6 +455,43 @@ def city_drift(
     payload = _build_drift_payload(slug, df, window_days=window_days, model=_model, median=_median)
     if payload is None:
         raise HTTPException(422, "Not enough data for drift analysis (need >= 10 rows and >= 5 rows per window)")
+
+    _cache_set(cache_key, payload)
+    return JSONResponse(payload, headers={"X-Cache": "MISS"})
+
+
+@app.get("/drift", summary="Global data drift — all cities pooled (model-level drift monitoring)")
+def global_drift(
+    window: str = Query(default="1d", pattern="^(1d|7d)$",
+                        description="Comparison window: '1d' (today vs yesterday) or '7d' (this week vs prior week)"),
+) -> dict:
+    """
+    Computes data drift across ALL 99 cities pooled together.
+    Since there is one global model (not per-city), this is the correct level
+    to detect model-level input distribution shift.
+    Result is served from Redis when pre-loaded by /warm-cache.
+    """
+    cache_key = f"aqi:drift:global:{window}"
+    cached    = _cache_get(cache_key)
+    if cached:
+        return JSONResponse(cached, headers={"X-Cache": "HIT"})
+
+    window_days = 1 if window == "1d" else 7
+    interval    = "2" if window == "1d" else "14"
+    df = _athena(f"""
+        SELECT timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
+        FROM aqi_db.aqi_unified
+        WHERE timestamp >= current_timestamp - interval '{interval}' day
+        ORDER BY timestamp ASC
+    """)
+
+    payload = _build_drift_payload(
+        "global", df, window_days=window_days,
+        model=_model, median=_median,
+        display_name="Global — All 99 Cities",
+    )
+    if payload is None:
+        raise HTTPException(422, "Not enough global data for drift analysis (need >= 10 rows and >= 5 rows per window)")
 
     _cache_set(cache_key, payload)
     return JSONResponse(payload, headers={"X-Cache": "MISS"})
@@ -767,6 +805,18 @@ def warm_cache() -> dict:
                     "computed_at": datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
                 }
                 pipe_entries.append((f"aqi:accuracy_trend:{slug}:8", json.dumps(acc_payload, default=str)))
+
+    # Global drift — pool ALL cities together (model has one global training set;
+    # this is the correct level to detect input distribution shift, not per-city).
+    # The warm-cache Athena query (340h ≈ 14 days) covers both 1d and 7d windows.
+    for w_days, w_label in [(1, "1d"), (7, "7d")]:
+        global_drift_payload = _build_drift_payload(
+            "global", df, window_days=w_days,
+            model=_model, median=_median,
+            display_name="Global — All 99 Cities",
+        )
+        if global_drift_payload is not None:
+            pipe_entries.append((f"aqi:drift:global:{w_label}", json.dumps(global_drift_payload, default=str)))
 
     # Single pipeline flush — one TCP round-trip for all SETEX + RPUSH commands
     cache_errors = 0
