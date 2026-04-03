@@ -339,7 +339,7 @@
             <h2 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">
               Accuracy Trend &mdash; Concept Drift Detection
             </h2>
-            <p class="text-[11px] text-gray-600 mt-0.5">Daily exact-match accuracy over last 8 weeks. Declining trend = concept drift.</p>
+            <p class="text-[11px] text-gray-600 mt-0.5">Daily exact-match accuracy over last 8 weeks — all 99 cities pooled. Declining trend = concept drift.</p>
           </div>
           <span x-show="accTrend?.concept_drift_flag"
                 class="text-xs font-bold px-3 py-1 rounded-full bg-red-900/60 text-red-400 border border-red-700 animate-pulse">
@@ -381,8 +381,7 @@
         </div>
         <div x-show="!accTrend && !accTrendLoading"
              class="flex flex-col items-center justify-center py-12 text-gray-700 text-sm gap-1">
-          <span>Select a city and open Data Drift tab to load trend</span>
-          <span class="text-xs text-gray-800">Requires ground-truth data in Athena predictions table</span>
+          <span>Open the Data Drift tab to load the global accuracy trend</span>
         </div>
 
         <div x-show="accTrend && !accTrendLoading" x-transition class="h-56">
@@ -1267,18 +1266,16 @@
       },
 
       async fetchAccuracyTrend() {
-        if (!this.selectedCity) return
-        if (this.accTrendCity === this.selectedCity && this.accTrend) return
+        if (this.accTrend) return
         this.accTrendLoading = true
         this.accTrend = null
         const ctrl  = new AbortController()
         const timer = setTimeout(() => ctrl.abort(), 30000)
         try {
-          const res = await fetch(`/accuracy-trend/${this.selectedCity}?weeks=8`, { signal: ctrl.signal })
+          const res = await fetch(`/accuracy-trend?weeks=8`, { signal: ctrl.signal })
           clearTimeout(timer)
           if (!res.ok) { this.accTrendLoading = false; return }
           this.accTrend     = await res.json()
-          this.accTrendCity = this.selectedCity
           this.accTrendLoading = false
           await new Promise(r => setTimeout(r, 250))
           this._renderAccTrendChart()
