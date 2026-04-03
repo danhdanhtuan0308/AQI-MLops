@@ -14,7 +14,7 @@
 set -euo pipefail
 
 # ── Config ───────────────────────────────────────────────────────────────────
-LOOKBACK=${1:-8}            # weeks of training data (default 8 weeks)
+LOOKBACK=${1:-52}           # weeks of training data (default 52 weeks = 1 year rolling)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR/.."
 TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
