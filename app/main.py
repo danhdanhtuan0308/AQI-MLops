@@ -580,52 +580,47 @@ def city_metrics(
     return JSONResponse(metrics_payload, headers={"X-Cache": "MISS"})
 
 
-@app.get("/accuracy-trend/{city_slug}", summary="Week-over-week accuracy trend for concept drift detection")
-def accuracy_trend(
-    city_slug: str,
+@app.get("/accuracy-trend", summary="Global accuracy trend — all 99 cities pooled (concept drift detection)")
+def global_accuracy_trend(
     weeks: int = Query(default=8, ge=2, le=12, description="Number of weeks to look back"),
 ) -> dict:
+    """Global week-over-week accuracy trend pooling all 99 cities.
+    Mirrors /drift (global) for concept drift at the model level.
+    Served from Redis warm-cache; falls back to Athena on miss.
     """
-    Returns daily accuracy (% correct predictions) over the last N weeks.
-    Computed by replaying the model on aqi_unified — same approach as /metrics,
-    so it works without requiring the predictions Iceberg table to have data.
-    A declining trend indicates concept drift.
-    """
-    slug      = _validate_city(city_slug)
-    cache_key = f"aqi:accuracy_trend:{slug}:{weeks}"
+    cache_key = f"aqi:accuracy_trend:global:{weeks}"
     cached    = _cache_get(cache_key)
     if cached:
         return JSONResponse(cached, headers={"X-Cache": "HIT"})
 
-    hours = weeks * 7 * 24 + 2   # +2 so the earliest window has a lag row
+    hours = weeks * 7 * 24 + 2
     try:
         df = _athena(f"""
-            SELECT timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
+            SELECT timestamp, city_slug, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
             FROM aqi_db.aqi_unified
-            WHERE city_slug = '{slug}'
-              AND timestamp >= current_timestamp - interval '{hours}' hour
-            ORDER BY timestamp ASC
+            WHERE timestamp >= current_timestamp - interval '{hours}' hour
+            ORDER BY city_slug, timestamp ASC
         """)
     except Exception:
         raise HTTPException(status_code=503, detail="Athena query failed — try again shortly.")
 
     if df.empty or len(df) < 10:
-        raise HTTPException(
-            status_code=422,
-            detail="Not enough historical data to compute accuracy trend.",
-        )
+        raise HTTPException(status_code=422, detail="Not enough global historical data.")
 
     df["aqi"] = pd.to_numeric(df["aqi"], errors="coerce").clip(upper=5)
-    rows = df.to_dict("records")
-    predictions = batch_predict(_model, _median, rows)
 
-    # Group by day — use the row_next timestamp (when the prediction is FOR)
-    valid = [r for r in predictions if r["actual"] is not None and r.get("timestamp")]
+    all_preds: list[dict] = []
+    for _slug, city_df in df.groupby("city_slug"):
+        rows = city_df.sort_values("timestamp").to_dict("records")
+        if len(rows) >= 3:
+            all_preds.extend(batch_predict(_model, _median, rows))
+
+    valid = [r for r in all_preds if r["actual"] is not None and r.get("timestamp")]
     if not valid:
-        raise HTTPException(status_code=422, detail="No labelled rows available for trend.")
+        raise HTTPException(status_code=422, detail="No labelled rows available.")
 
     import collections
-    daily: dict[str, dict] = collections.defaultdict(lambda: {"total": 0, "correct": 0})
+    daily: dict = collections.defaultdict(lambda: {"total": 0, "correct": 0})
     for r in valid:
         try:
             day = str(pd.Timestamp(r["timestamp"]).date())
@@ -635,21 +630,20 @@ def accuracy_trend(
         daily[day]["correct"] += int(r["predicted"] == r["actual"])
 
     if len(daily) < 2:
-        raise HTTPException(status_code=422, detail="Need at least 2 days of data for trend.")
+        raise HTTPException(status_code=422, detail="Need at least 2 days of data.")
 
     trend_rows = sorted(
         [{"day": d, "total": v["total"], "accuracy": round(v["correct"] / v["total"], 4)}
          for d, v in daily.items()],
         key=lambda x: x["day"],
     )
-
     accuracies  = [r["accuracy"] for r in trend_rows]
     last_week   = float(pd.Series(accuracies[-7:]).mean())
     prior_week  = float(pd.Series(accuracies[-14:-7]).mean()) if len(accuracies) >= 14 else None
     wow_delta   = round(last_week - prior_week, 4) if prior_week is not None else None
 
     payload = {
-        "city":               KNOWN_CITIES[slug]["name"],
+        "city":               "Global — All 99 Cities",
         "weeks":              weeks,
         "trend":              trend_rows,
         "last_7d_accuracy":   round(last_week, 4),
@@ -776,42 +770,46 @@ def warm_cache() -> dict:
                     }
                     pipe_entries.append((f"aqi:metrics:{slug}:{h}", json.dumps(metrics_payload, default=str)))
 
-        # Accuracy trend (concept drift) — reuse `history` from the block above
-        # We have up to 340 hours (~14 days); store under key :8 so the default
-        # frontend request (weeks=8) gets a Redis HIT immediately.
-        valid_trend = [r for r in history if r["actual"] is not None and r.get("timestamp")] if len(rows) >= 3 else []
-        if len(valid_trend) >= 10:
-            import collections as _col
-            daily: dict = _col.defaultdict(lambda: {"total": 0, "correct": 0})
-            for r in valid_trend:
-                try:
-                    day = str(pd.Timestamp(r["timestamp"]).date())
-                except Exception:
-                    continue
-                daily[day]["total"]   += 1
-                daily[day]["correct"] += int(r["predicted"] == r["actual"])
-            if len(daily) >= 2:
-                trend_rows = sorted(
-                    [{"day": d, "total": v["total"],
-                      "accuracy": round(v["correct"] / v["total"], 4)}
-                     for d, v in daily.items()],
-                    key=lambda x: x["day"],
-                )
-                accs       = [t["accuracy"] for t in trend_rows]
-                last_week  = float(pd.Series(accs[-7:]).mean())
-                prior_week = float(pd.Series(accs[-14:-7]).mean()) if len(accs) >= 14 else None
-                wow_delta  = round(last_week - prior_week, 4) if prior_week is not None else None
-                acc_payload = {
-                    "city":               KNOWN_CITIES[slug]["name"],
-                    "weeks":              8,
-                    "trend":              trend_rows,
-                    "last_7d_accuracy":   round(last_week, 4),
-                    "prior_7d_accuracy":  round(prior_week, 4) if prior_week is not None else None,
-                    "wow_delta":          wow_delta,
-                    "concept_drift_flag": wow_delta is not None and wow_delta < -0.10,
-                    "computed_at": datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-                }
-                pipe_entries.append((f"aqi:accuracy_trend:{slug}:8", json.dumps(acc_payload, default=str)))
+    # Global accuracy trend — pool ALL cities (concept drift at model level)
+    all_global_preds: list[dict] = []
+    for slug2, city_df2 in df.groupby("city_slug"):
+        if slug2 not in KNOWN_CITIES:
+            continue
+        rows2 = city_df2.sort_values("timestamp").to_dict("records")
+        if len(rows2) >= 3:
+            all_global_preds.extend(batch_predict(_model, _median, rows2))
+    valid_global = [r for r in all_global_preds if r["actual"] is not None and r.get("timestamp")]
+    if len(valid_global) >= 10:
+        import collections as _col2
+        g_daily: dict = _col2.defaultdict(lambda: {"total": 0, "correct": 0})
+        for r in valid_global:
+            try:
+                day = str(pd.Timestamp(r["timestamp"]).date())
+            except Exception:
+                continue
+            g_daily[day]["total"]   += 1
+            g_daily[day]["correct"] += int(r["predicted"] == r["actual"])
+        if len(g_daily) >= 2:
+            g_trend = sorted(
+                [{"day": d, "total": v["total"], "accuracy": round(v["correct"] / v["total"], 4)}
+                 for d, v in g_daily.items()],
+                key=lambda x: x["day"],
+            )
+            g_accs      = [t["accuracy"] for t in g_trend]
+            g_last      = float(pd.Series(g_accs[-7:]).mean())
+            g_prior     = float(pd.Series(g_accs[-14:-7]).mean()) if len(g_accs) >= 14 else None
+            g_wow       = round(g_last - g_prior, 4) if g_prior is not None else None
+            g_payload   = {
+                "city":               "Global — All 99 Cities",
+                "weeks":              8,
+                "trend":              g_trend,
+                "last_7d_accuracy":   round(g_last, 4),
+                "prior_7d_accuracy":  round(g_prior, 4) if g_prior is not None else None,
+                "wow_delta":          g_wow,
+                "concept_drift_flag": g_wow is not None and g_wow < -0.10,
+                "computed_at": datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            }
+            pipe_entries.append(("aqi:accuracy_trend:global:8", json.dumps(g_payload, default=str)))
 
     # Global drift — pool ALL cities together (model has one global training set;
     # this is the correct level to detect input distribution shift, not per-city).
