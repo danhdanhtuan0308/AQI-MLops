@@ -504,45 +504,52 @@ def global_drift(
     return JSONResponse(payload, headers={"X-Cache": "MISS"})
 
 
-@app.get("/metrics/{city_slug}", summary="Online F1 / Precision / Recall from recent production data")
-def city_metrics(
-    city_slug: str,
+@app.get("/model-metrics", summary="Global online F1 / Precision / Recall — all 99 cities pooled")
+def global_metrics(
     hours: int = Query(default=168, ge=24, le=168, description="Look-back window in hours (24h/48h/72h/168h=7d)"),
 ) -> dict:
     """
     Computes Precision, Recall, F1 by comparing model T+1 predictions against
-    real Athena ground-truth labels for the most recent N hours.
-    Pure online / production data — the training set is never touched.
-    Requires >= 10 rows with known actuals.
+    real Athena ground-truth labels for the most recent N hours — pooled across
+    all 99 cities.  One model, one score.
+    Served from Redis warm-cache; falls back to Athena on miss.
     """
-    slug      = _validate_city(city_slug)
-    cache_key = f"aqi:metrics:{slug}:{hours}"
+    cache_key = f"aqi:model-metrics:global:{hours}"
     cached    = _cache_get(cache_key)
     if cached:
         return JSONResponse(cached, headers={"X-Cache": "HIT"})
 
     limit = hours + 2
-    df = _athena(f"""
-        SELECT timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
-        FROM aqi_db.aqi_unified
-        WHERE city_slug = '{slug}'
-        ORDER BY timestamp DESC
-        LIMIT {limit}
-    """)
-    df = df.sort_values("timestamp").reset_index(drop=True)
+    try:
+        df = _athena(f"""
+            SELECT timestamp, city_slug, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
+            FROM aqi_db.aqi_unified
+            WHERE timestamp >= current_timestamp - interval '{limit}' hour
+            ORDER BY city_slug, timestamp ASC
+        """)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Athena query failed — try again shortly.")
+
+    if df.empty:
+        raise HTTPException(status_code=422, detail="No data available.")
+
     df["aqi"] = pd.to_numeric(df["aqi"], errors="coerce").clip(upper=5)
-    rows = df.to_dict("records")
-    predictions = batch_predict(_model, _median, rows)
+
+    all_preds: list[dict] = []
+    for _slug, city_df in df.groupby("city_slug"):
+        rows = city_df.sort_values("timestamp").to_dict("records")
+        if len(rows) >= 3:
+            all_preds.extend(batch_predict(_model, _median, rows))
 
     valid = [
         (r["predicted"], r["actual"])
-        for r in predictions
+        for r in all_preds
         if r["actual"] is not None
     ]
     if len(valid) < 10:
         raise HTTPException(
             status_code=422,
-            detail=f"Only {len(valid)} labelled rows — need ≥ 10 to compute metrics.",
+            detail=f"Only {len(valid)} labelled rows globally — need ≥ 10 to compute metrics.",
         )
 
     y_pred  = [p for p, _ in valid]
@@ -557,7 +564,7 @@ def city_metrics(
     )
 
     metrics_payload = {
-        "city":          KNOWN_CITIES[slug]["name"],
+        "city":          "Global — All 99 Cities",
         "window_hours":  hours,
         "n_predictions": len(valid),
         "weighted": {
@@ -734,41 +741,50 @@ def warm_cache() -> dict:
             if drift_payload is not None:
                 pipe_entries.append((f"aqi:drift:{slug}:{w_label}", json.dumps(drift_payload, default=str)))
 
-        # Metrics windows
-        if len(rows) >= 10:
-            for h in (24, 48, 72, 168):
-                limit = h + 2
-                rows_window = rows[-limit:] if len(rows) > limit else rows
-                predictions = batch_predict(_model, _median, rows_window)
-                valid = [(r["predicted"], r["actual"]) for r in predictions if r["actual"] is not None]
-                if len(valid) >= 10:
-                    from sklearn.metrics import precision_recall_fscore_support as _prfs
-                    y_pred = [p for p, _ in valid]
-                    y_true = [a for _, a in valid]
-                    labels = [1, 2, 3, 4, 5]
-                    prec_w, rec_w, f1_w, _ = _prfs(y_true, y_pred, average="weighted", labels=labels, zero_division=0)
-                    prec_cls, rec_cls, f1_cls, sup_cls = _prfs(y_true, y_pred, labels=labels, zero_division=0)
-                    metrics_payload = {
-                        "city":          KNOWN_CITIES[slug]["name"],
-                        "window_hours":  h,
-                        "n_predictions": len(valid),
-                        "weighted": {
-                            "f1":        round(float(f1_w),   4),
-                            "precision": round(float(prec_w), 4),
-                            "recall":    round(float(rec_w),  4),
-                        },
-                        "per_class": {
-                            str(cls): {
-                                "f1":        round(float(f1_cls[i]),   4),
-                                "precision": round(float(prec_cls[i]), 4),
-                                "recall":    round(float(rec_cls[i]),  4),
-                                "support":   int(sup_cls[i]),
-                            }
-                            for i, cls in enumerate(labels)
-                        },
-                        "computed_at": datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        # (per-city metrics removed — global metrics computed below after city loop)
+
+    # Global metrics — pool ALL cities (one model, one score per window)
+    from sklearn.metrics import precision_recall_fscore_support as _prfs
+    for h in (24, 48, 72, 168):
+        all_preds_h: list[tuple] = []
+        for slug3, city_df3 in df.groupby("city_slug"):
+            if slug3 not in KNOWN_CITIES:
+                continue
+            rows3 = city_df3.sort_values("timestamp").to_dict("records")
+            limit3 = h + 2
+            rows3 = rows3[-limit3:] if len(rows3) > limit3 else rows3
+            if len(rows3) >= 3:
+                preds3 = batch_predict(_model, _median, rows3)
+                all_preds_h.extend(
+                    (r["predicted"], r["actual"]) for r in preds3 if r["actual"] is not None
+                )
+        if len(all_preds_h) >= 10:
+            y_pred_h = [p for p, _ in all_preds_h]
+            y_true_h = [a for _, a in all_preds_h]
+            labels_g = [1, 2, 3, 4, 5]
+            prec_w_g, rec_w_g, f1_w_g, _ = _prfs(y_true_h, y_pred_h, average="weighted", labels=labels_g, zero_division=0)
+            prec_cls_g, rec_cls_g, f1_cls_g, sup_cls_g = _prfs(y_true_h, y_pred_h, labels=labels_g, zero_division=0)
+            global_metrics_payload = {
+                "city":          "Global — All 99 Cities",
+                "window_hours":  h,
+                "n_predictions": len(all_preds_h),
+                "weighted": {
+                    "f1":        round(float(f1_w_g),   4),
+                    "precision": round(float(prec_w_g), 4),
+                    "recall":    round(float(rec_w_g),  4),
+                },
+                "per_class": {
+                    str(cls): {
+                        "f1":        round(float(f1_cls_g[i]),   4),
+                        "precision": round(float(prec_cls_g[i]), 4),
+                        "recall":    round(float(rec_cls_g[i]),  4),
+                        "support":   int(sup_cls_g[i]),
                     }
-                    pipe_entries.append((f"aqi:metrics:{slug}:{h}", json.dumps(metrics_payload, default=str)))
+                    for i, cls in enumerate(labels_g)
+                },
+                "computed_at": datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            }
+            pipe_entries.append((f"aqi:model-metrics:global:{h}", json.dumps(global_metrics_payload, default=str)))
 
     # Global accuracy trend — pool ALL cities (concept drift at model level)
     all_global_preds: list[dict] = []

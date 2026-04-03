@@ -22,6 +22,7 @@ def _make_athena_df(n: int = 15, aqi: int = 2) -> pd.DataFrame:
     return pd.DataFrame([
         {
             "timestamp": base + datetime.timedelta(hours=i),
+            "city_slug": "tokyo",
             "aqi": aqi, "co": 300.0, "no": 2.0, "no2": 15.0,
             "o3": 60.0, "so2": 5.0, "pm2_5": 10.0, "pm10": 20.0, "nh3": 3.0,
         }
@@ -123,35 +124,35 @@ class TestHistory:
 # ── /metrics ─────────────────────────────────────────────────────────────────
 
 class TestMetrics:
-    def test_unknown_city_404(self, client):
-        assert client.get("/metrics/atlantis").status_code == 404
+    def test_global_metrics_200(self, client):
+        assert client.get("/model-metrics").status_code == 200
 
-    def test_valid_city_200(self, client):
-        assert client.get("/metrics/tokyo").status_code == 200
+    def test_global_metrics_hours_param(self, client):
+        assert client.get("/model-metrics?hours=24").status_code == 200
 
     def test_weighted_schema(self, client):
-        d = client.get("/metrics/tokyo").json()
+        d = client.get("/model-metrics").json()
         assert "weighted" in d
         w = d["weighted"]
         assert "f1" in w and "precision" in w and "recall" in w
 
     def test_per_class_schema(self, client):
-        d = client.get("/metrics/tokyo").json()
+        d = client.get("/model-metrics").json()
         for cls in ["1", "2", "3", "4", "5"]:
             assert cls in d["per_class"]
             c = d["per_class"][cls]
             assert "f1" in c and "precision" in c and "recall" in c and "support" in c
 
     def test_metrics_in_valid_range(self, client):
-        d = client.get("/metrics/tokyo").json()
+        d = client.get("/model-metrics").json()
         w = d["weighted"]
         for v in (w["f1"], w["precision"], w["recall"]):
             assert 0.0 <= v <= 1.0, f"Metric out of range: {v}"
 
     def test_n_predictions_positive(self, client):
-        d = client.get("/metrics/tokyo").json()
+        d = client.get("/model-metrics").json()
         assert d["n_predictions"] >= 10
 
     def test_computed_at_present(self, client):
-        d = client.get("/metrics/tokyo").json()
+        d = client.get("/model-metrics").json()
         assert "computed_at" in d and "UTC" in d["computed_at"]

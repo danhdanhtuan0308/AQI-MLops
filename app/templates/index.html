@@ -455,7 +455,7 @@
             <h2 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Live Production Metrics</h2>
             <div class="flex gap-1">
               <template x-for="[val, label] in [['24','24h'],['48','48h'],['72','72h'],['168','7d']]" :key="val">
-                <button @click="metricsHours=val; liveMetrics=null; metricsCity=null; fetchLiveMetrics()"
+                <button @click="metricsHours=val; liveMetrics=null; _cachedMetricsHours=null; fetchLiveMetrics()"
                         :class="metricsHours===val ? 'bg-green-700 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200'"
                         class="px-2.5 py-0.5 rounded-lg text-xs font-semibold transition-colors"
                         x-text="label"></button>
@@ -464,8 +464,7 @@
           </div>
           <span x-show="metricsLoading" class="text-xs text-gray-500 animate-pulse">Computing&hellip;</span>
           <span x-show="!metricsLoading && liveMetrics" class="text-xs text-gray-600" x-text="liveMetrics?.computed_at || ''"></span>
-          <span x-show="!metricsLoading && !liveMetrics && !selectedCity" class="text-xs text-gray-600">Select a city in Forecast tab first</span>
-          <span x-show="!metricsLoading && !liveMetrics && selectedCity" class="text-xs text-orange-400">Need &ge; 10 labelled rows in Athena</span>
+          <span x-show="!metricsLoading && !liveMetrics" class="text-xs text-orange-400">Need &ge; 10 labelled rows in Athena</span>
         </div>
 
         <!-- F1 / Precision / Recall giant cards -->
@@ -779,7 +778,8 @@
       // live production metrics state
       liveMetrics:    null,
       metricsLoading: false,
-      metricsCity:    null,
+      metricsCity:         null,
+      _cachedMetricsHours: null,
       metricsHours:   '168',
 
       // chart instances
@@ -878,7 +878,7 @@
           // Reset per-city caches when city changes
           if (this.driftWindowLoaded !== null && false) { /* drift is global, never invalidated by city */ }
           if (this.accTrendCity !== this.selectedCity) { this.accTrend = null; this.accTrendCity = null }
-          if (this.metricsCity !== this.selectedCity) { this.liveMetrics = null; this.metricsCity = null }
+          // metrics are global — no invalidation needed when city changes
           // If drift tab is already open, auto-fetch accuracy trend for new city (drift is already loaded)
           if (this.activeView === 'drift') { this.fetchAccuracyTrend() }
 
@@ -1249,15 +1249,14 @@
       },
 
       async fetchLiveMetrics() {
-        if (!this.selectedCity) return
-        if (this.metricsCity === this.selectedCity && this.liveMetrics) return  // cached
+        if (this.liveMetrics && this._cachedMetricsHours === this.metricsHours) return  // cached
         this.metricsLoading = true
         this.liveMetrics    = null
         try {
-          const res = await fetch(`/metrics/${this.selectedCity}?hours=${this.metricsHours}`)
-          if (!res.ok) { this.metricsLoading = false; return }  // e.g. <10 labelled rows
-          this.liveMetrics  = await res.json()
-          this.metricsCity  = this.selectedCity
+          const res = await fetch(`/model-metrics?hours=${this.metricsHours}`)
+          if (!res.ok) { this.metricsLoading = false; return }
+          this.liveMetrics         = await res.json()
+          this._cachedMetricsHours = this.metricsHours
         } catch(e) {
           // silent — metrics only available once Athena has ground-truth
         } finally {
@@ -1496,7 +1495,7 @@
           if (this.selectedCity) await this.fetchAll()
           await this.fetchDrift()
           await this.fetchMeta()
-          if (this.selectedCity) { this.metricsCity = null; await this.fetchLiveMetrics() }
+          await this.fetchLiveMetrics()
           this.nextRefreshSec = 3600
         }, 60 * 60 * 1000)
       },
@@ -1504,7 +1503,7 @@
       async triggerRefresh() {
         if (this.selectedCity) await this.fetchAll()
         await this.fetchMeta()
-        if (this.selectedCity) { this.metricsCity = null; await this.fetchLiveMetrics() }
+        await this.fetchLiveMetrics()
         this.nextRefreshSec = 3600
       },
 
