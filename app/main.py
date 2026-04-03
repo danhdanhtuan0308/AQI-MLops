@@ -367,7 +367,7 @@ def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1,
     # is always ~0 regardless of actual distribution changes. They are model
     # features but not drift-monitorable via z-score on means.
     # hour/month sin/cos omitted — deterministic, cannot drift.
-    feature_cols = ["aqi_lag1", "pm10_lag1", "pm25_ratio", "co", "no", "no2", "o3", "so2", "nh3", "pm10"]
+    feature_cols = ["pm10_lag1", "pm25_ratio", "co", "no", "no2", "o3", "so2", "nh3", "pm10"]
     features_out: dict = {}
     for col in feature_cols:
         ref_v = ref_df[col].dropna()
