@@ -342,8 +342,11 @@ def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1,
     # Computed feature: pm25_ratio (same formula used at inference time)
     df["pm25_ratio"] = df["pm2_5"] / (df["pm2_5"] + df["pm10"] + df["no2"] + df["o3"] + df["so2"] + 1e-9)
     # Lag features: match exact model inputs (aqi_lag1, pm10_lag1 = T-1 values)
-    df["aqi_lag1"]  = df["aqi"].shift(1)
-    df["pm10_lag1"] = df["pm10"].shift(1)
+    df["aqi_lag1"]     = df["aqi"].shift(1)
+    df["pm10_lag1"]    = df["pm10"].shift(1)
+    # Delta features: momentum (T - T-1)
+    df["aqi_delta_1h"]  = df["aqi"]  - df["aqi_lag1"]
+    df["pm10_delta_1h"] = df["pm10"] - df["pm10_lag1"]
 
     if len(df) < 10:
         return None
@@ -358,9 +361,8 @@ def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1,
     ref_label    = "yesterday"    if window_days == 1 else "prior 7 days"
     recent_label = "today"        if window_days == 1 else "last 7 days"
 
-    # Track all 9 driftable model features (pm10_lag1 omitted — near-identical to pm10 at 1h lag;
-    # hour/month sin/cos omitted — deterministic, cannot drift)
-    feature_cols = ["aqi_lag1", "pm25_ratio", "co", "no", "no2", "o3", "so2", "nh3", "pm10"]
+    # Track driftable model features (hour/month sin/cos omitted — deterministic)
+    feature_cols = ["aqi_lag1", "aqi_delta_1h", "pm25_ratio", "co", "no", "no2", "o3", "so2", "nh3", "pm10", "pm10_lag1", "pm10_delta_1h"]
     features_out: dict = {}
     for col in feature_cols:
         ref_v = ref_df[col].dropna()

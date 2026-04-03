@@ -15,13 +15,15 @@ REGISTRY_DIR = Path(__file__).parent.parent / "ml" / "model-registry"
 
 # ── Feature schema (must match ml/train.py exactly) ───────────────────────────
 FEATURES: list[str] = [
-    "aqi_lag1",    # AQI at T-1
-    "pm10_lag1",   # PM10 at T-1
-    "hour_sin",    # sin(2π·hour/24)
-    "hour_cos",    # cos(2π·hour/24)
-    "month_sin",   # sin(2π·month/12)
-    "month_cos",   # cos(2π·month/12)
-    "pm25_ratio",  # PM2.5 / Σ pollutants at T
+    "aqi_lag1",      # AQI at T-1
+    "pm10_lag1",     # PM10 at T-1
+    "aqi_delta_1h",  # AQI momentum: T - (T-1)
+    "pm10_delta_1h", # PM10 momentum: T - (T-1)
+    "hour_sin",      # sin(2π·hour/24)
+    "hour_cos",      # cos(2π·hour/24)
+    "month_sin",     # sin(2π·month/12)
+    "month_cos",     # cos(2π·month/12)
+    "pm25_ratio",    # PM2.5 / Σ pollutants at T
     "co", "no", "no2", "o3", "so2", "nh3", "pm10",  # point-in-time pollutants at T
 ]
 
@@ -197,14 +199,20 @@ def build_feature_vector(
     except (TypeError, ValueError, KeyError):
         pm25_ratio = float(median.get("pm25_ratio", 0.1))
 
+    aqi_lag1  = _safe(row_prev.get("aqi"),  median.get("aqi_lag1", 2))
+    pm10_lag1 = _safe(row_prev.get("pm10"), median.get("pm10_lag1", 0))
+    aqi_curr  = _safe(row_curr.get("aqi"),  median.get("aqi_lag1", 2))
+
     feat = {
-        "aqi_lag1":   _safe(row_prev.get("aqi"),  median.get("aqi_lag1", 2)),
-        "pm10_lag1":  _safe(row_prev.get("pm10"), median.get("pm10_lag1", 0)),
-        "hour_sin":   float(np.sin(2 * np.pi * hour / 24)),
-        "hour_cos":   float(np.cos(2 * np.pi * hour / 24)),
-        "month_sin":  float(np.sin(2 * np.pi * month / 12)),
-        "month_cos":  float(np.cos(2 * np.pi * month / 12)),
-        "pm25_ratio": round(pm25_ratio, 4),
+        "aqi_lag1":      aqi_lag1,
+        "pm10_lag1":     pm10_lag1,
+        "aqi_delta_1h":  round(aqi_curr - aqi_lag1, 4),
+        "pm10_delta_1h": round(pm10 - pm10_lag1, 4),
+        "hour_sin":      float(np.sin(2 * np.pi * hour / 24)),
+        "hour_cos":      float(np.cos(2 * np.pi * hour / 24)),
+        "month_sin":     float(np.sin(2 * np.pi * month / 12)),
+        "month_cos":     float(np.cos(2 * np.pi * month / 12)),
+        "pm25_ratio":    round(pm25_ratio, 4),
         "co":  _safe(row_curr.get("co"),  median.get("co", 0)),
         "no":  _safe(row_curr.get("no"),  median.get("no", 0)),
         "no2": no2,

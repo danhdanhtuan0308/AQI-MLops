@@ -1,0 +1,21 @@
+{
+  "features": [
+    "aqi_lag1",
+    "pm10_lag1",
+    "aqi_delta_1h",
+    "pm10_delta_1h",
+    "hour_sin",
+    "hour_cos",
+    "month_sin",
+    "month_cos",
+    "pm25_ratio",
+    "co",
+    "no",
+    "no2",
+    "o3",
+    "so2",
+    "nh3",
+    "pm10"
+  ],
+  "target": "aqi_next"
+}

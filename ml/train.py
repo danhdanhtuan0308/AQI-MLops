@@ -64,6 +64,8 @@ VAL_F1: float      = float(cfg["selected_model"]["validation_f1"])
 FEATURES = [
     "aqi_lag1",                                        # Baseline State  (T-1)
     "pm10_lag1",                                       # Historical Trend (T-1)
+    "aqi_delta_1h",                                    # AQI momentum    (T - T-1)
+    "pm10_delta_1h",                                   # PM10 momentum   (T - T-1)
     "hour_sin", "hour_cos",                            # Temporal Cycle  (T)
     "month_sin", "month_cos",                          # Seasonal Cycle  (T)
     "pm25_ratio", "co", "no", "no2", "o3", "so2", "nh3", "pm10",  # Point-in-time (T)
@@ -163,10 +165,13 @@ def engineer_features(raw: pd.DataFrame) -> pd.DataFrame:
     raw = raw.sort_values(["city_slug", "timestamp"]).reset_index(drop=True)
 
     # Per-city lag / lead — prevents cross-city data leakage
-    grp              = raw.groupby("city_slug", sort=False)
-    raw["aqi_lag1"]  = grp["aqi"].shift(1)    # AQI  @ T-1
-    raw["pm10_lag1"] = grp["pm10"].shift(1)   # PM10 @ T-1
-    raw["aqi_next"]  = grp["aqi"].shift(-1)   # AQI  @ T+1  ← target
+    grp               = raw.groupby("city_slug", sort=False)
+    raw["aqi_lag1"]   = grp["aqi"].shift(1)         # AQI  @ T-1
+    raw["pm10_lag1"]  = grp["pm10"].shift(1)        # PM10 @ T-1
+    raw["aqi_next"]   = grp["aqi"].shift(-1)        # AQI  @ T+1  ← target
+    # Delta features: momentum (rate of change from T-1 → T)
+    raw["aqi_delta_1h"]  = raw["aqi"].astype(float) - raw["aqi_lag1"]
+    raw["pm10_delta_1h"] = raw["pm10"].astype(float) - raw["pm10_lag1"]
 
     # Drop first/last row of each city (lag/lead undefined)
     feat_df = (
