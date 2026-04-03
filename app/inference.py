@@ -173,7 +173,7 @@ def build_feature_vector(
     median: dict,
 ) -> np.ndarray:
     """
-    Build the 14-feature (1, 14) float32 array for a single (T-1, T) pair.
+    Build the 16-feature (1, 16) float32 array for a single (T-1, T) pair.
 
     row_prev  — Athena row at T-1: needs 'aqi', 'pm10'
     row_curr  — Athena row at T:   needs 'timestamp', pollutant columns

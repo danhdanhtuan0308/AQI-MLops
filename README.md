@@ -164,7 +164,7 @@ The model is an XGBoost classifier that predicts which AQI class a city will hav
 | Validation F1 | 0.9535 |
 | Retrain schedule | Every day at 05:00 UTC via GitHub Actions |
 
-### Features (14 total)
+### Features (16 total)
 
 | Feature | Description |
 |---------|-------------|
