@@ -27,7 +27,8 @@ def ensure_test_artifacts():
     from app.inference import FEATURES
     try:
         from xgboost import XGBClassifier as _X
-        _m = _X(); _m.load_model(str(reg / "model.ubj"))
+        _m = _X()
+        _m.load_model(str(reg / "model.ubj"))
         stale = _m.n_features_in_ != len(FEATURES)
     except Exception:
         stale = True
