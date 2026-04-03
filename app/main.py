@@ -743,31 +743,35 @@ def warm_cache() -> dict:
 
         # (per-city metrics removed — global metrics computed below after city loop)
 
-    # Global metrics — pool ALL cities (one model, one score per window)
+    # Build all_global_preds once — reused for both global metrics and accuracy trend
     from sklearn.metrics import precision_recall_fscore_support as _prfs
+    all_global_preds: list[dict] = []
+    for slug2, city_df2 in df.groupby("city_slug"):
+        if slug2 not in KNOWN_CITIES:
+            continue
+        rows2 = city_df2.sort_values("timestamp").to_dict("records")
+        if len(rows2) >= 3:
+            all_global_preds.extend(batch_predict(_model, _median, rows2))
+
+    # Global metrics — filter all_global_preds by timestamp window (no extra batch_predict calls)
+    global_max_ts = df["timestamp"].max() if not df.empty else pd.Timestamp.utcnow()
     for h in (24, 48, 72, 168):
-        all_preds_h: list[tuple] = []
-        for slug3, city_df3 in df.groupby("city_slug"):
-            if slug3 not in KNOWN_CITIES:
-                continue
-            rows3 = city_df3.sort_values("timestamp").to_dict("records")
-            limit3 = h + 2
-            rows3 = rows3[-limit3:] if len(rows3) > limit3 else rows3
-            if len(rows3) >= 3:
-                preds3 = batch_predict(_model, _median, rows3)
-                all_preds_h.extend(
-                    (r["predicted"], r["actual"]) for r in preds3 if r["actual"] is not None
-                )
-        if len(all_preds_h) >= 10:
-            y_pred_h = [p for p, _ in all_preds_h]
-            y_true_h = [a for _, a in all_preds_h]
+        cutoff = global_max_ts - pd.Timedelta(hours=h + 2)
+        valid_h = [
+            (r["predicted"], r["actual"])
+            for r in all_global_preds
+            if r["actual"] is not None and r.get("timestamp") and pd.Timestamp(r["timestamp"]) >= cutoff
+        ]
+        if len(valid_h) >= 10:
+            y_pred_h = [p for p, _ in valid_h]
+            y_true_h = [a for _, a in valid_h]
             labels_g = [1, 2, 3, 4, 5]
             prec_w_g, rec_w_g, f1_w_g, _ = _prfs(y_true_h, y_pred_h, average="weighted", labels=labels_g, zero_division=0)
             prec_cls_g, rec_cls_g, f1_cls_g, sup_cls_g = _prfs(y_true_h, y_pred_h, labels=labels_g, zero_division=0)
             global_metrics_payload = {
                 "city":          "Global — All 99 Cities",
                 "window_hours":  h,
-                "n_predictions": len(all_preds_h),
+                "n_predictions": len(valid_h),
                 "weighted": {
                     "f1":        round(float(f1_w_g),   4),
                     "precision": round(float(prec_w_g), 4),
@@ -786,14 +790,7 @@ def warm_cache() -> dict:
             }
             pipe_entries.append((f"aqi:model-metrics:global:{h}", json.dumps(global_metrics_payload, default=str)))
 
-    # Global accuracy trend — pool ALL cities (concept drift at model level)
-    all_global_preds: list[dict] = []
-    for slug2, city_df2 in df.groupby("city_slug"):
-        if slug2 not in KNOWN_CITIES:
-            continue
-        rows2 = city_df2.sort_values("timestamp").to_dict("records")
-        if len(rows2) >= 3:
-            all_global_preds.extend(batch_predict(_model, _median, rows2))
+    # Global accuracy trend — reuse all_global_preds (already built above)
     valid_global = [r for r in all_global_preds if r["actual"] is not None and r.get("timestamp")]
     if len(valid_global) >= 10:
         import collections as _col2
