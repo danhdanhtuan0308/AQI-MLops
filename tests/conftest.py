@@ -22,7 +22,16 @@ def ensure_test_artifacts():
     inference tests pass without the real production model.
     """
     reg = Path("ml/model-registry")
-    needs_artifacts = not all(
+    # Rebuild if any artifact is missing OR if the saved model's feature count
+    # doesn't match the current FEATURES list (catches stale model.ubj in git).
+    from app.inference import FEATURES
+    try:
+        from xgboost import XGBClassifier as _X
+        _m = _X(); _m.load_model(str(reg / "model.ubj"))
+        stale = _m.n_features_in_ != len(FEATURES)
+    except Exception:
+        stale = True
+    needs_artifacts = stale or not all(
         (reg / f).exists() for f in ("model.ubj", "median.json", "features.json")
     )
     if needs_artifacts:
