@@ -76,7 +76,7 @@ Integration tests for all FastAPI routes. The client fixture patches app.main._a
 | TestCities | Returns a list, each item has slug, name, lat, and lon fields, tokyo is in the list |
 | TestPredict | Returns 404 for an unknown city, returns 200 for a valid city, predicted AQI is in range 1 through 5, probabilities sum to 1, five probability keys are present |
 | TestHistory | Returns 404 for an unknown city, returns a list of records, each record has timestamp, predicted, and actual fields |
-| TestMetrics | Returns 404 for an unknown city, returns 200 for a valid city, weighted schema has f1 and precision and recall, per-class schema has f1 and precision and recall and support, all metric values are between 0 and 1, n_predictions is at least 10, computed_at string ends with UTC |
+| TestMetrics | Tests the global /model-metrics endpoint (no city slug): returns 200 and optionally with an hours param, weighted schema has f1 and precision and recall, per-class schema has f1 and precision and recall and support, all metric values are between 0 and 1, n_predictions is at least 10, computed_at string ends with UTC |
 
 ---
 

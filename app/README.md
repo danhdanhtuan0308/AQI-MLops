@@ -25,9 +25,13 @@ app/
 | GET | / | Serve the interactive dashboard |
 | GET | /cities | All 99 cities with coordinates and timezone |
 | GET | /predict/{city_slug} | Next-hour AQI prediction and per-class probabilities (from Redis) |
-| GET | /history/{city_slug} | Predicted vs actual AQI for the last 24, 48, 168, or 720 hours |
-| GET | /drift/{city_slug} | Feature drift z-scores comparing the current week to the previous week |
-| GET | /metrics/{city_slug} | Live weighted F1, Precision, Recall computed from Athena ground truth data |
+| GET | /history/{city_slug} | Predicted vs actual AQI for the last 24, 48, 72, or 168 hours |
+| GET | /drift/{city_slug} | Per-city feature drift z-scores: today vs yesterday (1d) or this week vs prior week (7d) |
+| GET | /drift | Global drift across all 99 cities pooled — model-level input distribution shift |
+| GET | /model-metrics | Global weighted F1, Precision, Recall pooled across all 99 cities (24/48/72/168 h window) |
+| GET | /accuracy-trend | Global day-by-day accuracy trend for concept drift detection (2–12 week look-back) |
+| GET | /feature-importance | XGBoost feature importances (weight, gain, cover) — model-level |
+| GET | /feature-importance/history | Feature importance trend across the last 30 daily retrains |
 | GET | /health | Service health and model metadata |
 | GET | /cache/status | Redis connection status, number of cached keys, and memory used |
 | POST | /warm-cache | Query Athena once for all 99 cities, run batch inference, populate Redis |
@@ -44,9 +48,11 @@ Cache keys and their TTL:
 | Key pattern | Contents | TTL |
 |-------------|----------|-----|
 | aqi:predict:{slug} | Next-hour prediction payload | 2 hours |
-| aqi:history:{slug}:{hours} | Raw history rows for charts | 2 hours |
-| aqi:drift:{slug} | Drift z-scores | 2 hours |
-| aqi:metrics:{slug}:{hours} | F1, precision, recall | 2 hours |
+| aqi:history:{slug}:{hours} | History rows for charts — windows: 24, 48, 72, 168 | 2 hours |
+| aqi:drift:{slug}:{window} | Per-city drift z-scores — windows: 1d, 7d | 2 hours |
+| aqi:drift:global:{window} | Global (all cities) drift z-scores — windows: 1d, 7d | 2 hours |
+| aqi:model-metrics:global:{hours} | Global F1, precision, recall — windows: 24, 48, 72, 168 | 2 hours |
+| aqi:accuracy_trend:global:{weeks} | Global day-by-day accuracy trend | 2 hours |
 | aqi:pred_buffer | Redis list of prediction records for Lambda C | No TTL (drained hourly) |
 
 The /warm-cache endpoint replaces the cache for all 99 cities at once using a single Athena query. Lambda B calls this endpoint after every hourly data merge, so the cache is always fresh within minutes of new data arriving.
@@ -59,14 +65,19 @@ The /reload-model endpoint clears all aqi:* keys so the new model's predictions 
 
 Calling POST /warm-cache triggers the following steps:
 
-1. Query Athena for the last 722 hours of sensor data for all 99 cities in a single SQL query.
+1. Query Athena for the last 340 hours of sensor data for all 99 cities in a single SQL query.
 2. Group the rows by city.
 3. For each city, build a 15-feature vector from the last two rows and run predict_single.
 4. Cache the prediction result under aqi:predict:{slug} (2-hour TTL).
-5. Cache four time windows of raw history rows under aqi:history:{slug}:24, :48, :168, and :720.
-6. Append a prediction record to aqi:pred_buffer so Lambda C can persist it to S3 and Athena.
+5. Cache four history windows under aqi:history:{slug}:24, :48, :72, and :168.
+6. Cache per-city drift payloads under aqi:drift:{slug}:1d and aqi:drift:{slug}:7d.
+7. Compute and cache global metrics (aqi:model-metrics:global:{hours}) and global drift (aqi:drift:global:{window}).
+8. Append a prediction record to aqi:pred_buffer so Lambda C can persist it to S3 and Athena.
+9. All Redis writes are batched into a single pipeline flush — one TCP round-trip instead of ~1200 sequential SETEX calls.
 
 This approach means Athena is queried only once per hour total, regardless of how many users are viewing the dashboard.
+
+The /warm-cache endpoint is called automatically by Lambda B after every hourly data merge. In addition, a background thread started at service startup calls warm_cache() independently every hour (default interval 3600 s, configurable via WARM_INTERVAL_SEC) so the cache stays hot even if Lambda B is unavailable.
 
 ---
 
@@ -90,11 +101,10 @@ For each position i in the rows list:
 
 This means every prediction in the history chart was a genuine forward-in-time forecast. The model only saw data up to time T when making each prediction.
 
-### Feature list (16 total)
+### Feature list (15 total)
 
 | Feature | Source | Description |
 |---------|--------|-------------|
-| aqi_lag1 | Previous row (T-1) | AQI class from the previous hour |
 | pm10_lag1 | Previous row (T-1) | PM10 from the previous hour |
 | aqi_delta_1h | T-1 → T | AQI change from T-1 to T (positive = rising, negative = falling) |
 | pm10_delta_1h | T-1 → T | PM10 change from T-1 to T, captures PM10 momentum |
@@ -120,8 +130,8 @@ Single-file SPA using Alpine.js for state management and Chart.js for visualizat
 | Tab | Contents |
 |-----|----------|
 | Forecast | City picker, next-hour prediction card, probability bar chart, historical AQI line chart |
-| Data Drift | Feature drift z-scores bar chart, AQI class distribution comparison |
-| System | Model metadata, live F1 and Precision and Recall cards, per-class breakdown, data freshness, auto-refresh countdown |
+| Data Drift | Per-city feature drift z-scores bar chart (1d / 7d window), AQI class distribution comparison, prediction distribution drift |
+| System | Global model metrics (F1, Precision, Recall), per-class breakdown, global accuracy trend, feature importances, data freshness, auto-refresh countdown |
 
 Metric color thresholds: green for 80% or above, yellow for 60% to 79%, red for below 60%.
 

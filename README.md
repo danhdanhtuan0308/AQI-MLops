@@ -28,7 +28,9 @@ Lambda B receives the trigger and runs a MERGE INTO query in Athena to insert th
 
 **Step 3 — Batch Inference and Caching (FastAPI on EC2)**
 
-When /warm-cache is called, FastAPI queries Athena for the last 722 hours of sensor data for all 99 cities in a single query. It uses those rows to build feature vectors and runs the XGBoost model to predict each city's next-hour AQI class. All results are saved to Redis with a 2-hour TTL. Each prediction is also appended to a Redis list called aqi:pred_buffer so Lambda C can persist them to storage.
+When /warm-cache is called, FastAPI queries Athena for the last 340 hours of sensor data for all 99 cities in a single query. It uses those rows to build 15-feature vectors and runs the XGBoost model to predict each city's next-hour AQI class. All predictions are saved to Redis with a 2-hour TTL. Per-city drift payloads and global metrics are also computed and cached. Each prediction is also appended to a Redis list called aqi:pred_buffer so Lambda C can persist them to storage.
+
+In addition to being triggered by Lambda B, FastAPI runs a self-warming background thread (default every 3600 s, configurable via WARM_INTERVAL_SEC) that calls warm_cache() independently, so the cache stays hot even if Lambda B is unavailable.
 
 When a user opens the dashboard and requests a prediction, FastAPI reads the cached result from Redis directly. No Athena query happens at serving time.
 
@@ -53,12 +55,14 @@ Lambda B (triggered by Lambda A)
   POST /warm-cache to FastAPI on EC2
 
 FastAPI /warm-cache
-  queries Athena: SELECT last 722 hours for all 99 cities
-  builds 16-feature vectors from sensor rows
+  queries Athena: SELECT last 340 hours for all 99 cities
+  builds 15-feature vectors from sensor rows
   runs XGBoost model on each city
-  saves to Redis: aqi:predict:{slug}     (2hr TTL, for dashboard)
-  saves to Redis: aqi:history:{slug}:*   (2hr TTL, for charts)
-  appends to Redis: aqi:pred_buffer      (for Lambda C)
+  saves to Redis: aqi:predict:{slug}          (2hr TTL, for dashboard)
+  saves to Redis: aqi:history:{slug}:{h}      (2hr TTL, windows: 24/48/72/168h)
+  saves to Redis: aqi:drift:{slug}:{window}   (2hr TTL, windows: 1d/7d)
+  saves to Redis: aqi:model-metrics:global:{h}(2hr TTL, global metrics)
+  appends to Redis: aqi:pred_buffer           (for Lambda C)
 
 Lambda C (every hour at :05)
   reads all records from aqi:pred_buffer in Redis
@@ -129,9 +133,13 @@ docker-compose.yml            Production compose with model-registry volume bind
 | GET | / | Interactive dashboard |
 | GET | /cities | All 99 cities with coordinates and timezone |
 | GET | /predict/{city_slug} | Next-hour AQI prediction (served from Redis) |
-| GET | /history/{city_slug} | Predicted vs actual AQI chart data (24, 48, 168, or 720 hours) |
-| GET | /drift/{city_slug} | Feature drift z-scores comparing this week to last week |
-| GET | /metrics/{city_slug} | Live weighted F1, Precision, Recall from Athena ground truth |
+| GET | /history/{city_slug} | Predicted vs actual AQI chart data (24, 48, 72, or 168 hours) |
+| GET | /drift/{city_slug} | Per-city feature drift z-scores: today vs yesterday (1d) or this week vs prior week (7d) |
+| GET | /drift | Global drift across all 99 cities pooled (model-level input distribution shift) |
+| GET | /model-metrics | Global weighted F1, Precision, Recall pooled across all 99 cities |
+| GET | /accuracy-trend | Global day-by-day accuracy trend for concept drift detection |
+| GET | /feature-importance | XGBoost feature importances (weight, gain, cover) |
+| GET | /feature-importance/history | Feature importance trend across the last 30 daily retrains |
 | GET | /health | Service health and model metadata |
 | GET | /cache/status | Redis connection status, key count, and memory used |
 | POST | /warm-cache | Pre-compute predictions for all 99 cities in one batch |
@@ -293,7 +301,7 @@ LIMIT 20;
 - **Trains** an XGBoost classifier (multi:softprob, 5 AQI classes) on the full 12-month history
 - **Serves** next-hour AQI predictions via a FastAPI app running inside Docker on EC2
 - **Monitors** drift weekly (pollutant z-scores, AQI class distribution shift)
-- **Retrains** every Monday automatically via GitHub Actions
+- **Retrains** every day at 05:00 UTC automatically via GitHub Actions
 
 ---
 
