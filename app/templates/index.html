@@ -32,8 +32,33 @@
 
   <main class="max-w-7xl mx-auto px-6 py-8 space-y-6">
 
-    <!-- ── Controls ───────────────────────────────────────────────────────── -->
-    <section class="rounded-2xl p-5 border border-gray-800" style="background:#0d1224">
+    <!-- ── Tab bar ──────────────────────────────────────────────────────── -->
+    <div class="flex border-b border-gray-800">
+      <button @click="setView('forecast')"
+              :class="activeView === 'forecast' ? 'border-b-2 border-blue-500 text-white' : 'text-gray-500 hover:text-gray-300'"
+              class="px-6 py-2.5 text-sm font-semibold transition-colors -mb-px">
+        Forecast
+      </button>
+      <button @click="setView('drift')"
+              :class="activeView === 'drift' ? 'border-b-2 border-purple-500 text-white' : 'text-gray-500 hover:text-gray-300'"
+              class="px-6 py-2.5 text-sm font-semibold transition-colors -mb-px">
+        Data Drift
+      </button>
+      <button @click="setView('metrics')"
+              :class="activeView === 'metrics' ? 'border-b-2 border-green-500 text-white' : 'text-gray-500 hover:text-gray-300'"
+              class="px-6 py-2.5 text-sm font-semibold transition-colors -mb-px">
+        Metrics
+      </button>
+      <button @click="setView('model')"
+              :class="activeView === 'model' ? 'border-b-2 border-yellow-500 text-white' : 'text-gray-500 hover:text-gray-300'"
+              class="px-6 py-2.5 text-sm font-semibold transition-colors -mb-px">
+        Model
+      </button>
+    </div>
+
+    <!-- ── Forecast controls (only visible on Forecast tab) ───────────────── -->
+    <section x-show="activeView === 'forecast'" x-transition
+             class="rounded-2xl p-5 border border-gray-800" style="background:#0d1224">
       <div class="flex flex-wrap gap-4 items-end">
         <!-- City selector -->
         <div class="flex-1 min-w-56">
@@ -87,29 +112,6 @@
         <span x-text="error"></span>
       </div>
     </section>
-    <!-- ── Tab bar ──────────────────────────────────────────────────────── -->
-    <div class="flex border-b border-gray-800">
-      <button @click="setView('forecast')"
-              :class="activeView === 'forecast' ? 'border-b-2 border-blue-500 text-white' : 'text-gray-500 hover:text-gray-300'"
-              class="px-6 py-2.5 text-sm font-semibold transition-colors -mb-px">
-        Forecast
-      </button>
-      <button @click="setView('drift')"
-              :class="activeView === 'drift' ? 'border-b-2 border-purple-500 text-white' : 'text-gray-500 hover:text-gray-300'"
-              class="px-6 py-2.5 text-sm font-semibold transition-colors -mb-px">
-        Data Drift
-      </button>
-      <button @click="setView('metrics')"
-              :class="activeView === 'metrics' ? 'border-b-2 border-green-500 text-white' : 'text-gray-500 hover:text-gray-300'"
-              class="px-6 py-2.5 text-sm font-semibold transition-colors -mb-px">
-        Metrics
-      </button>
-      <button @click="setView('model')"
-              :class="activeView === 'model' ? 'border-b-2 border-yellow-500 text-white' : 'text-gray-500 hover:text-gray-300'"
-              class="px-6 py-2.5 text-sm font-semibold transition-colors -mb-px">
-        Model
-      </button>
-    </div>
 
     <!-- ── FORECAST TAB ────────────────────────────────────────────────────── -->
     <div x-show="activeView === 'forecast'" class="space-y-6">
@@ -394,6 +396,21 @@
     <!-- ── METRICS TAB ─────────────────────────────────────────────────────── -->
     <div x-show="activeView === 'metrics'" x-transition class="space-y-6">
 
+      <!-- Window selector (top-of-tab filter, mirrors drift tab) -->
+      <div class="flex items-center gap-3">
+        <span class="text-[11px] text-gray-500 uppercase tracking-wider font-semibold">Window:</span>
+        <div class="flex gap-1">
+          <template x-for="[val, label] in [['24','24h'],['48','48h'],['72','72h'],['168','7d']]" :key="val">
+            <button @click="metricsHours=val; liveMetrics=null; _cachedMetricsHours=null; fetchLiveMetrics()"
+                    :class="metricsHours===val ? 'bg-green-700 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200'"
+                    class="px-3 py-1 rounded-lg text-xs font-semibold transition-colors"
+                    x-text="label"></button>
+          </template>
+        </div>
+        <span x-show="metricsLoading" class="text-xs text-gray-500 animate-pulse ml-2">Computing&hellip;</span>
+        <span x-show="!metricsLoading && liveMetrics" class="text-xs text-gray-600 ml-2" x-text="liveMetrics?.computed_at || ''"></span>
+      </div>
+
       <div x-show="metaLoading" class="flex items-center justify-center py-16 text-gray-500 gap-3">
         <svg class="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
@@ -451,19 +468,7 @@
       <!-- Live Production Metrics -->
       <div x-show="meta && !metaLoading" x-transition class="space-y-3">
         <div class="flex items-center justify-between flex-wrap gap-2">
-          <div class="flex items-center gap-3">
-            <h2 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Live Production Metrics</h2>
-            <div class="flex gap-1">
-              <template x-for="[val, label] in [['24','24h'],['48','48h'],['72','72h'],['168','7d']]" :key="val">
-                <button @click="metricsHours=val; liveMetrics=null; _cachedMetricsHours=null; fetchLiveMetrics()"
-                        :class="metricsHours===val ? 'bg-green-700 text-white' : 'bg-gray-800 text-gray-400 hover:text-gray-200'"
-                        class="px-2.5 py-0.5 rounded-lg text-xs font-semibold transition-colors"
-                        x-text="label"></button>
-              </template>
-            </div>
-          </div>
-          <span x-show="metricsLoading" class="text-xs text-gray-500 animate-pulse">Computing&hellip;</span>
-          <span x-show="!metricsLoading && liveMetrics" class="text-xs text-gray-600" x-text="liveMetrics?.computed_at || ''"></span>
+          <h2 class="text-[11px] font-semibold text-gray-500 uppercase tracking-wider">Live Production Metrics</h2>
           <span x-show="!metricsLoading && !liveMetrics" class="text-xs text-orange-400">Need &ge; 10 labelled rows in Athena</span>
         </div>
 
