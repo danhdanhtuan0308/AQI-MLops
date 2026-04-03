@@ -15,7 +15,6 @@ REGISTRY_DIR = Path(__file__).parent.parent / "ml" / "model-registry"
 
 # ── Feature schema (must match ml/train.py exactly) ───────────────────────────
 FEATURES: list[str] = [
-    "aqi_lag1",      # AQI at T-1
     "pm10_lag1",     # PM10 at T-1
     "aqi_delta_1h",  # AQI momentum: T - (T-1)
     "pm10_delta_1h", # PM10 momentum: T - (T-1)
@@ -173,10 +172,10 @@ def build_feature_vector(
     median: dict,
 ) -> np.ndarray:
     """
-    Build the 16-feature (1, 16) float32 array for a single (T-1, T) pair.
+    Build the 15-feature (1, 15) float32 array for a single (T-1, T) pair.
 
-    row_prev  — Athena row at T-1: needs 'aqi', 'pm10'
-    row_curr  — Athena row at T:   needs 'timestamp', pollutant columns
+    row_prev  — Athena row at T-1: needs 'pm10'
+    row_curr  — Athena row at T:   needs 'timestamp', 'aqi', pollutant columns
     median    — fallback dict keyed by feature name
     """
     ts    = row_curr["timestamp"]
@@ -199,12 +198,11 @@ def build_feature_vector(
     except (TypeError, ValueError, KeyError):
         pm25_ratio = float(median.get("pm25_ratio", 0.1))
 
-    aqi_lag1  = _safe(row_prev.get("aqi"),  median.get("aqi_lag1", 2))
+    aqi_lag1  = _safe(row_prev.get("aqi"),  median.get("pm10_lag1", 0))  # only used for delta
     pm10_lag1 = _safe(row_prev.get("pm10"), median.get("pm10_lag1", 0))
-    aqi_curr  = _safe(row_curr.get("aqi"),  median.get("aqi_lag1", 2))
+    aqi_curr  = _safe(row_curr.get("aqi"),  median.get("aqi_delta_1h", 0))
 
     feat = {
-        "aqi_lag1":      aqi_lag1,
         "pm10_lag1":     pm10_lag1,
         "aqi_delta_1h":  round(aqi_curr - aqi_lag1, 4),
         "pm10_delta_1h": round(pm10 - pm10_lag1, 4),

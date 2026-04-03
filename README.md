@@ -158,17 +158,16 @@ The model is an XGBoost classifier that predicts which AQI class a city will hav
 |----------|-------|
 | Algorithm | XGBClassifier with multi:softprob objective |
 | AQI classes | 5 (Good, Fair, Moderate, Poor, Very Poor) |
-| Number of features | 16 |
+| Number of features | 15 |
 | Training data | 12 months of hourly readings from all 99 cities |
 | Cross-validated F1 | 0.9425 |
 | Validation F1 | 0.9535 |
 | Retrain schedule | Every day at 05:00 UTC via GitHub Actions |
 
-### Features (16 total)
+### Features (15 total)
 
 | Feature | Description |
 |---------|-------------|
-| aqi_lag1 | AQI class from the previous hour |
 | pm10_lag1 | PM10 reading from the previous hour |
 | aqi_delta_1h | AQI change from T-1 to T (positive = rising, negative = falling) |
 | pm10_delta_1h | PM10 change from T-1 to T, captures PM10 momentum |

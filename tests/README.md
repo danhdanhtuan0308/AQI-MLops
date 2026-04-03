@@ -35,7 +35,7 @@ uv run ruff check app/ ml/ tests/
 
 Contains a session-scoped autouse fixture called ensure_test_artifacts. It checks whether all three model artifact files exist at ml/model-registry/model.ubj, median.json, and features.json. If any are missing (as in CI where the model-registry/ directory is gitignored), it creates a minimal XGBoost model:
 
-- 100 synthetic rows, 5 AQI classes, 16 features
+- 100 synthetic rows, 5 AQI classes, 15 features
 - 10 estimators with max_depth 2 for fast construction
 - Writes all three artifact files before any test runs
 
@@ -49,7 +49,7 @@ Tests for functions in app/inference.py.
 
 | Test class | What it covers |
 |------------|----------------|
-| TestBuildFeatureVector | Output shape is (16,), dtype is float32, no NaN in output, aqi_delta_1h and pm10_delta_1h are computed correctly, hour_sin and hour_cos are correct at midnight and noon, month_sin and month_cos are correct, pm25_ratio is non-negative, None and NaN inputs fall back to the median value |
+| TestBuildFeatureVector | Output shape is (15,), dtype is float32, no NaN in output, aqi_delta_1h and pm10_delta_1h are computed correctly, hour_sin and hour_cos are correct at midnight and noon, month_sin and month_cos are correct, pm25_ratio is non-negative, None and NaN inputs fall back to the median value |
 | TestPredictSingle | Predicted AQI is in range 1 through 5, probabilities sum to 1.0, five probability keys are present, response contains label and color fields |
 | TestBatchPredict | Returns empty list on fewer than 3 rows, output length equals number of rows minus 2, schema is correct, actual field matches rows at position i+2 |
 
@@ -61,8 +61,8 @@ Tests for feature engineering and array building in ml/train.py. Runs entirely i
 
 | Test class | What it covers |
 |------------|----------------|
-| TestEngineerFeatures | All 16 features are present in the output, no NaN in features or target, target values are in range 1 through 5, hour_sin and hour_cos are bounded between -1 and 1, month_sin and month_cos are bounded between -1 and 1, pm25_ratio is non-negative, aqi_delta_1h and pm10_delta_1h are present, no cross-city data leakage in lag features, row count equals number of cities times hours minus 2 |
-| TestBuildArrays | X shape is (n_samples, 16), y length matches X, dtype is float32, y is zero-indexed from 0 to 4, no NaN in X, median keys match the feature list |
+| TestEngineerFeatures | All 15 features are present in the output, no NaN in features or target, target values are in range 1 through 5, hour_sin and hour_cos are bounded between -1 and 1, month_sin and month_cos are bounded between -1 and 1, pm25_ratio is non-negative, aqi_delta_1h and pm10_delta_1h are present, no cross-city data leakage in lag features, row count equals number of cities times hours minus 2 |
+| TestBuildArrays | X shape is (n_samples, 15), y length matches X, dtype is float32, y is zero-indexed from 0 to 4, no NaN in X, median keys match the feature list |
 
 ---
 
@@ -72,7 +72,7 @@ Integration tests for all FastAPI routes. The client fixture patches app.main._a
 
 | Test class | What it covers |
 |------------|----------------|
-| TestHealth | Returns HTTP 200, all expected schema keys are present, model_loaded is True, n_features is 16 |
+| TestHealth | Returns HTTP 200, all expected schema keys are present, model_loaded is True, n_features is 15 |
 | TestCities | Returns a list, each item has slug, name, lat, and lon fields, tokyo is in the list |
 | TestPredict | Returns 404 for an unknown city, returns 200 for a valid city, predicted AQI is in range 1 through 5, probabilities sum to 1, five probability keys are present |
 | TestHistory | Returns 404 for an unknown city, returns a list of records, each record has timestamp, predicted, and actual fields |

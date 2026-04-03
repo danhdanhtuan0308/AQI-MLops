@@ -41,13 +41,12 @@ ml/
 
 ---
 
-## Features (16 total)
+## Features (15 total)
 
 Features are computed per city so there is no cross-city data leakage. Each prediction uses two consecutive rows from the same city.
 
 | Feature | Source time | Description |
 |---------|-------------|-------------|
-| aqi_lag1 | T-1 | AQI class from the previous hour |
 | pm10_lag1 | T-1 | PM10 reading from the previous hour |
 | aqi_delta_1h | T-1 → T | AQI change from T-1 to T (positive = rising, negative = falling) |
 | pm10_delta_1h | T-1 → T | PM10 change from T-1 to T, captures PM10 momentum |
@@ -162,7 +161,7 @@ Three files are written to ml/model-registry/ after training. The FastAPI servic
 | File | Description |
 |------|-------------|
 | model.ubj | XGBoost native binary format, loaded with model.load_model() |
-| features.json | List of 16 feature names and the target column name |
+| features.json | List of 15 feature names and the target column name |
 | median.json | Per-feature median values used to fill missing sensor readings at inference time |
 
 These files are bind-mounted into the Docker container at runtime and are not baked into the image. This allows the daily retrain to update the model on disk and hot-reload it without rebuilding the container.

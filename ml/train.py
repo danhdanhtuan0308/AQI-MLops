@@ -62,7 +62,6 @@ VAL_F1: float      = float(cfg["selected_model"]["validation_f1"])
 
 # ── Feature / target schema ───────────────────────────────────────────────────
 FEATURES = [
-    "aqi_lag1",                                        # Baseline State  (T-1)
     "pm10_lag1",                                       # Historical Trend (T-1)
     "aqi_delta_1h",                                    # AQI momentum    (T - T-1)
     "pm10_delta_1h",                                   # PM10 momentum   (T - T-1)
@@ -138,7 +137,9 @@ def engineer_features(raw: pd.DataFrame) -> pd.DataFrame:
 
     Feature diagram
     ---------------
-    pm10_lag1, aqi_lag1   (T-1)  Historical trend / baseline state
+    pm10_lag1             (T-1)  Historical PM10 level
+    aqi_delta_1h          (T)    AQI momentum (T − T-1): rising (+) or falling (−)
+    pm10_delta_1h         (T)    PM10 momentum (T − T-1)
     hour_sin, hour_cos    (T)    Temporal cycle — time of day
     month_sin, month_cos  (T)    Seasonal cycle — month of year
     pm25_ratio            (T)    PM2.5 share of total pollution burden
@@ -175,7 +176,7 @@ def engineer_features(raw: pd.DataFrame) -> pd.DataFrame:
 
     # Drop first/last row of each city (lag/lead undefined)
     feat_df = (
-        raw.dropna(subset=["aqi_lag1", "pm10_lag1", "aqi_next"])
+        raw.dropna(subset=["pm10_lag1", "aqi_next"])
            .copy()
            .reset_index(drop=True)
     )
