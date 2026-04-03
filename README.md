@@ -54,7 +54,7 @@ Lambda B (triggered by Lambda A)
 
 FastAPI /warm-cache
   queries Athena: SELECT last 722 hours for all 99 cities
-  builds 14-feature vectors from sensor rows
+  builds 16-feature vectors from sensor rows
   runs XGBoost model on each city
   saves to Redis: aqi:predict:{slug}     (2hr TTL, for dashboard)
   saves to Redis: aqi:history:{slug}:*   (2hr TTL, for charts)
@@ -158,7 +158,7 @@ The model is an XGBoost classifier that predicts which AQI class a city will hav
 |----------|-------|
 | Algorithm | XGBClassifier with multi:softprob objective |
 | AQI classes | 5 (Good, Fair, Moderate, Poor, Very Poor) |
-| Number of features | 14 |
+| Number of features | 16 |
 | Training data | 12 months of hourly readings from all 99 cities |
 | Cross-validated F1 | 0.9425 |
 | Validation F1 | 0.9535 |
@@ -170,6 +170,8 @@ The model is an XGBoost classifier that predicts which AQI class a city will hav
 |---------|-------------|
 | aqi_lag1 | AQI class from the previous hour |
 | pm10_lag1 | PM10 reading from the previous hour |
+| aqi_delta_1h | AQI change from T-1 to T (positive = rising, negative = falling) |
+| pm10_delta_1h | PM10 change from T-1 to T, captures PM10 momentum |
 | hour_sin | Sine encoding of the current hour, captures the daily cycle |
 | hour_cos | Cosine encoding of the current hour |
 | month_sin | Sine encoding of the current month, captures seasonal patterns |

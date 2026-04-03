@@ -61,7 +61,7 @@ Calling POST /warm-cache triggers the following steps:
 
 1. Query Athena for the last 722 hours of sensor data for all 99 cities in a single SQL query.
 2. Group the rows by city.
-3. For each city, build a 14-feature vector from the last two rows and run predict_single.
+3. For each city, build a 16-feature vector from the last two rows and run predict_single.
 4. Cache the prediction result under aqi:predict:{slug} (2-hour TTL).
 5. Cache four time windows of raw history rows under aqi:history:{slug}:24, :48, :168, and :720.
 6. Append a prediction record to aqi:pred_buffer so Lambda C can persist it to S3 and Athena.
@@ -77,7 +77,7 @@ Core ML inference logic, isolated from FastAPI so it can be tested independently
 | Function | Description |
 |----------|-------------|
 | load_artifacts() | Loads model.ubj, median.json, and features.json from ml/model-registry/ |
-| build_feature_vector(prev_row, row, median) | Engineers 14 features from two consecutive sensor rows |
+| build_feature_vector(prev_row, row, median) | Engineers 16 features from two consecutive sensor rows |
 | predict_single(model, X) | Returns predicted AQI class (1-5), label, color, and probabilities dict |
 | batch_predict(model, median, rows) | Runs windowed predictions over a time-sorted list of rows, returns predicted and actual pairs |
 
@@ -90,12 +90,14 @@ For each position i in the rows list:
 
 This means every prediction in the history chart was a genuine forward-in-time forecast. The model only saw data up to time T when making each prediction.
 
-### Feature list (14 total)
+### Feature list (16 total)
 
 | Feature | Source | Description |
 |---------|--------|-------------|
 | aqi_lag1 | Previous row (T-1) | AQI class from the previous hour |
 | pm10_lag1 | Previous row (T-1) | PM10 from the previous hour |
+| aqi_delta_1h | T-1 → T | AQI change from T-1 to T (positive = rising, negative = falling) |
+| pm10_delta_1h | T-1 → T | PM10 change from T-1 to T, captures PM10 momentum |
 | hour_sin | Current row (T) | sin(2 * pi * hour / 24), daily cycle |
 | hour_cos | Current row (T) | cos(2 * pi * hour / 24), daily cycle |
 | month_sin | Current row (T) | sin(2 * pi * month / 12), seasonal cycle |
