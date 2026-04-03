@@ -361,8 +361,13 @@ def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1,
     ref_label    = "yesterday"    if window_days == 1 else "prior 7 days"
     recent_label = "today"        if window_days == 1 else "last 7 days"
 
-    # Track driftable model features (hour/month sin/cos omitted — deterministic)
-    feature_cols = ["aqi_lag1", "aqi_delta_1h", "pm25_ratio", "co", "no", "no2", "o3", "so2", "nh3", "pm10", "pm10_lag1", "pm10_delta_1h"]
+    # Track driftable model features.
+    # Delta features (aqi_delta_1h, pm10_delta_1h) are intentionally excluded:
+    # their mean is always ~0 (mean-reverting by definition), so z-score drift
+    # is always ~0 regardless of actual distribution changes. They are model
+    # features but not drift-monitorable via z-score on means.
+    # hour/month sin/cos omitted — deterministic, cannot drift.
+    feature_cols = ["aqi_lag1", "pm10_lag1", "pm25_ratio", "co", "no", "no2", "o3", "so2", "nh3", "pm10"]
     features_out: dict = {}
     for col in feature_cols:
         ref_v = ref_df[col].dropna()
