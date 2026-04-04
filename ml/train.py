@@ -209,12 +209,12 @@ def main() -> None:
     parser.add_argument(
         "--lookback-weeks",
         type=int,
-        default=None,
+        default=52,
         metavar="N",
         help=(
-            "Train on the most recent N weeks of data instead of the full dataset. "
-            "Recommended for weekly rolling retraining (e.g., --lookback-weeks 8). "
-            "Omit to train on the full 12-month history."
+            "Train on the most recent N weeks of data (default: 52). "
+            "One full year captures all seasonal cycles while avoiding stale concept drift. "
+            "Must match the daily retrain window to keep training distribution consistent."
         ),
     )
     args = parser.parse_args()
@@ -226,7 +226,7 @@ def main() -> None:
     log.info("  CV F1   : %.6f  |  Val F1 (notebook): %.6f", CV_F1, VAL_F1)
     log.info(
         "  Lookback: %s",
-        f"last {args.lookback_weeks} weeks" if args.lookback_weeks else "full dataset (12 months)",
+        f"last {args.lookback_weeks} weeks",
     )
     log.info("=" * 70)
 
@@ -244,7 +244,7 @@ def main() -> None:
     log.info(
         "Training on %d rows (%s)",
         len(feat_df),
-        f"last {args.lookback_weeks} weeks" if args.lookback_weeks else "full dataset",
+        f"last {args.lookback_weeks} weeks",
     )
     model = XGBClassifier(
         objective="multi:softprob",
