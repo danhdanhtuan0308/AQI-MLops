@@ -3,9 +3,14 @@
 # retrain_daily.sh — Daily retrain for the AQI forecasting model
 #
 # Run manually or via cron / GitHub Actions every day at 05:00 UTC.
+# Rolling window: trains on the most recent 365 days (1 full year).
+# Each daily run shifts the window forward by 1 day automatically because
+# train.py uses current_timestamp in the Athena query at runtime.
+#   e.g. run on 03/21/2026 → trains on 03/21/2025–03/21/2026
+#
 # Usage:
-#   ./ml/retrain_daily.sh              # default: 8-week lookback
-#   ./ml/retrain_daily.sh 4            # custom lookback in weeks
+#   ./ml/retrain_daily.sh              # default: 365 days (1 year rolling)
+#   ./ml/retrain_daily.sh 180          # custom lookback in days
 #   ./ml/retrain_daily.sh --no-reload  # skip restart reminder
 #
 # Cron example (every day at 05:00 UTC):
@@ -14,7 +19,7 @@
 set -euo pipefail
 
 # ── Config ───────────────────────────────────────────────────────────────────
-LOOKBACK=${1:-52}           # weeks of training data (default 52 weeks = 1 year rolling)
+LOOKBACK=${1:-365}          # days of training data (default 365 days = 1 full year rolling)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$SCRIPT_DIR/.."
 TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
@@ -39,11 +44,11 @@ fi
 echo "═══════════════════════════════════════════════════════" | tee -a "$LOG_FILE"
 echo "  AQI Daily Retrain" | tee -a "$LOG_FILE"
 echo "  Started : $TIMESTAMP" | tee -a "$LOG_FILE"
-echo "  Lookback: last $LOOKBACK weeks" | tee -a "$LOG_FILE"
+echo "  Lookback: last $LOOKBACK days (rolling 1-year window)" | tee -a "$LOG_FILE"
 echo "  Log     : $LOG_FILE" | tee -a "$LOG_FILE"
 echo "═══════════════════════════════════════════════════════" | tee -a "$LOG_FILE"
 
-python ml/train.py --lookback-weeks "$LOOKBACK" 2>&1 | tee -a "$LOG_FILE"
+python ml/train.py --lookback-days "$LOOKBACK" 2>&1 | tee -a "$LOG_FILE"
 
 FINISH=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
 echo "" | tee -a "$LOG_FILE"

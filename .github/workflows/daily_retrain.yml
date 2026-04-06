@@ -5,10 +5,10 @@ on:
     - cron: '0 5 * * *'   # Every day at 05:00 UTC
   workflow_dispatch:
     inputs:
-      lookback_weeks:
-        description: 'Weeks of training data to include'
+      lookback_days:
+        description: 'Days of training data to include (default 365 = 1 year rolling)'
         required: false
-        default: '8'
+        default: '365'
 
 jobs:
   # ── Gate: all tests must pass before retraining ────────────────────────────
@@ -59,9 +59,9 @@ jobs:
 
       - name: Run daily retrain
         run: |
-          WEEKS=${{ github.event.inputs.lookback_weeks || '52' }}
-          echo "Training on last ${WEEKS} weeks of data"
-          uv run python ml/train.py --lookback-weeks "$WEEKS"
+          DAYS=${{ github.event.inputs.lookback_days || '365' }}
+          echo "Training on last ${DAYS} days of data (rolling 1-year window)"
+          uv run python ml/train.py --lookback-days "$DAYS"
 
       - name: Validate new model (smoke test)
         run: |

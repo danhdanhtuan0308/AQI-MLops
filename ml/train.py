@@ -82,15 +82,17 @@ mlflow.set_experiment(EXPERIMENT_NAME)
 
 # ── 1. Data loading ───────────────────────────────────────────────────────────
 
-def load_data(lookback_weeks: int | None = None) -> pd.DataFrame:
+def load_data(lookback_days: int | None = None) -> pd.DataFrame:
     """Pull raw AQI data from AWS Athena.
 
     Parameters
     ----------
-    lookback_weeks:
-        When set, restrict training data to the most recent N weeks.
+    lookback_days:
+        When set, restrict training data to the most recent N days.
         Use ``None`` (default) to train on all data ever ingested.
-        Example: ``--lookback-weeks 52`` for a rolling 1-year retrain.
+        Example: ``--lookback-days 365`` for a true rolling 1-year retrain.
+        Each daily run shifts the window forward by 1 day automatically
+        because the query uses ``current_timestamp`` at runtime.
     """
     import awswrangler as wr
 
@@ -102,8 +104,8 @@ def load_data(lookback_weeks: int | None = None) -> pd.DataFrame:
     )
 
     where = (
-        f"WHERE timestamp >= current_timestamp - interval '{lookback_weeks * 7}' day"
-        if lookback_weeks
+        f"WHERE timestamp >= current_timestamp - interval '{lookback_days}' day"
+        if lookback_days
         else ""
     )
     sql = f"""
@@ -207,14 +209,15 @@ def build_arrays(feat_df: pd.DataFrame) -> tuple:
 def main() -> None:
     parser = argparse.ArgumentParser(description="AQI XGBoost training pipeline")
     parser.add_argument(
-        "--lookback-weeks",
+        "--lookback-days",
         type=int,
-        default=52,
+        default=365,
         metavar="N",
         help=(
-            "Train on the most recent N weeks of data (default: 52). "
-            "One full year captures all seasonal cycles while avoiding stale concept drift. "
-            "Must match the daily retrain window to keep training distribution consistent."
+            "Train on the most recent N days of data (default: 365 = 1 full year). "
+            "Each daily retrain shifts the window forward by 1 day automatically "
+            "because the SQL uses current_timestamp at runtime. "
+            "e.g. run on 03/21 → trains on 03/21/2025–03/21/2026."
         ),
     )
     args = parser.parse_args()
@@ -226,12 +229,12 @@ def main() -> None:
     log.info("  CV F1   : %.6f  |  Val F1 (notebook): %.6f", CV_F1, VAL_F1)
     log.info(
         "  Lookback: %s",
-        f"last {args.lookback_weeks} weeks",
+        f"last {args.lookback_days} days (rolling 1-year window)",
     )
     log.info("=" * 70)
 
     # ── Data ─────────────────────────────────────────────────────────────────────
-    raw     = load_data(args.lookback_weeks)
+    raw     = load_data(args.lookback_days)
     feat_df = engineer_features(raw)
     X, y, median = build_arrays(feat_df)
 
@@ -244,7 +247,7 @@ def main() -> None:
     log.info(
         "Training on %d rows (%s)",
         len(feat_df),
-        f"last {args.lookback_weeks} weeks",
+        f"last {args.lookback_days} days",
     )
     model = XGBClassifier(
         objective="multi:softprob",
@@ -269,7 +272,7 @@ def main() -> None:
         mlflow.log_param("n_features",      len(FEATURES))
         mlflow.log_param("features",        json.dumps(FEATURES))
         mlflow.log_param("total_rows",      len(X))
-        mlflow.log_param("lookback_weeks",  args.lookback_weeks or "full")
+        mlflow.log_param("lookback_days",   args.lookback_days or "full")
 
         # --- reference metrics from hyper-parameter search --------------------
         mlflow.log_metric("cv_f1",           CV_F1)
