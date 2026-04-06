@@ -24,7 +24,7 @@ ml/
 | Property | Value |
 |----------|-------|
 | Source | AWS Athena aqi_db.aqi_unified (S3-backed Parquet via Iceberg) |
-| Time range | 2025-03-20 to 2026-03-20 (12 months) |
+| Time range | Rolling 365-day window; slides forward 1 day on each daily retrain (e.g. run on Apr 7 → trains on Apr 7, 2025 – Apr 7, 2026) |
 | Cities | 99 world cities, hourly readings |
 | Total rows | Approximately 876,000 after feature engineering |
 | Target | aqi_next: AQI class at T+1, values 1 through 5 |
@@ -78,7 +78,7 @@ The target aqi_next is the AQI class at T+1. Internally it is stored as 0-indexe
 | Hyperparameter search | RandomizedSearchCV, 20 trials, 3-fold cross-validation |
 | Cross-validation F1 (weighted) | 0.9425 |
 | Validation F1 (weighted) | 0.9535 |
-| Class weighting | compute_sample_weight("balanced") to prevent bias toward majority classes |
+| Class weighting | compute_sample_weight("balanced") — no synthetic data; reweights existing rows so XGBoost penalises minority AQI classes more heavily |
 
 ### Locked Hyperparameters
 
@@ -103,7 +103,7 @@ The pipeline runs in five stages:
 
 ```
 load_data()
-  Query all rows from Athena aqi_db.aqi_unified
+  Query last 365 days from Athena aqi_db.aqi_unified (rolling window; current_timestamp used at runtime so the window slides forward 1 day automatically on each daily retrain)
 
 engineer_features()
   Compute lag features, sin/cos time encodings, pm25_ratio, and the target column

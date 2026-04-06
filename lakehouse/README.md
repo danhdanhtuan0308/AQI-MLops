@@ -72,7 +72,7 @@ Required environment variables for Lambda C:
 
 3. Every hour (triggered by Lambda A): Lambda B runs MERGE INTO aqi_unified scoped to the exact new file. Only 99 rows are scanned. After the merge, it POSTs /warm-cache to FastAPI.
 
-4. After Lambda B triggers it: FastAPI queries Athena for the last 722 hours of all 99 cities in one query. It builds features, runs the XGBoost model, stores predictions in Redis with a 2-hour TTL, and appends each prediction to aqi:pred_buffer.
+4. After Lambda B triggers it: FastAPI queries Athena for the last 340 hours of all 99 cities in one query. It builds features, runs the XGBoost model, stores predictions in Redis with a 2-hour TTL, and appends each prediction to aqi:pred_buffer.
 
 5. Every hour at :05: Lambda C reads aqi:pred_buffer from Redis, writes a Parquet file to s3://weather-bulk/predictions/, and runs INSERT INTO aqi_db.predictions.
 
