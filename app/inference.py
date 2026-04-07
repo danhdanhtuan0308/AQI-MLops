@@ -18,16 +18,17 @@ FEATURES: list[str] = [
     "pm10_lag1",       # PM10 at T-1
     "aqi_delta_1h",   # AQI momentum: T - (T-1)
     "pm10_delta_1h",  # PM10 momentum: T - (T-1)
-    "aqi_delta_2h",   # AQI momentum: T - (T-2)                  ← NEW
-    "aqi_delta_3h",   # AQI momentum: T - (T-3)                  ← NEW
-    "aqi_roll_std4",  # 4-hour rolling AQI std (volatility)       ← NEW
-    "pm25_delta_1h",  # PM2.5 momentum: T - (T-1)                ← NEW
+    "aqi_delta_2h",   # AQI momentum: T - (T-2)
+    "aqi_delta_3h",   # AQI momentum: T - (T-3)
+    "aqi_roll_std4",  # 4-hour rolling AQI std (volatility)
+    "pm25_delta_1h",  # PM2.5 momentum: T - (T-1)
     "hour_sin",       # sin(2π·hour/24)
     "hour_cos",       # cos(2π·hour/24)
     "month_sin",      # sin(2π·month/12)
     "month_cos",      # cos(2π·month/12)
     "pm25_ratio",     # PM2.5 / Σ pollutants at T
     "co", "no", "no2", "o3", "so2", "nh3", "pm10",  # point-in-time pollutants at T
+    "aqi",            # current AQI class integer (T) — anchors model to present state
 ]
 
 # ── AQI class metadata ────────────────────────────────────────────────────────
@@ -240,6 +241,7 @@ def build_feature_vector(
         "so2": so2,
         "nh3": _safe(row_curr.get("nh3"), median.get("nh3", 0)),
         "pm10": pm10,
+        "aqi": aqi_curr,
     }
     return np.array([[feat[f] for f in FEATURES]], dtype="float32")
 
@@ -289,8 +291,18 @@ def batch_predict(
     proba_batch = model.predict_proba(X_batch)          # (N, 5)
     preds       = np.argmax(proba_batch, axis=1) + 1    # 1-indexed
 
+    # Confidence gate: suppress low-confidence class 1-3 transitions.
+    # Requires >=80% confidence to commit a new class for non-dangerous transitions.
+    # Class 4/5 always passes so early dangerous-air warnings are preserved.
+    CONF_GATE = 0.80
+    gated = list(preds)
+    for j in range(1, len(gated)):
+        if gated[j] != gated[j - 1] and int(gated[j]) < 4:
+            if float(proba_batch[j, gated[j] - 1]) < CONF_GATE:
+                gated[j] = gated[j - 1]
+
     results = []
-    for idx, pred in enumerate(preds):
+    for idx, pred in enumerate(gated):
         i        = idx + 3
         row_curr = rows[i]
         row_next = rows[i + 1]
