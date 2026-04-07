@@ -347,6 +347,8 @@ def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1,
     # Delta features: momentum (T - T-1)
     df["aqi_delta_1h"]  = df["aqi"]  - df["aqi_lag1"]
     df["pm10_delta_1h"] = df["pm10"] - df["pm10_lag1"]
+    # Volatility feature: 4-hour rolling std of AQI — must match inference.py exactly
+    df["aqi_roll_std4"] = df["aqi"].rolling(4, min_periods=2).std()
 
     if len(df) < 10:
         return None
