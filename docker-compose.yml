@@ -21,8 +21,11 @@ services:
     env_file: .env
 
     volumes:
+      # App source is mounted so a git pull + container restart picks up code changes
+      # without needing a full docker image rebuild.
+      - ./app:/app/app:ro
       # Model artifacts are kept on the host and mounted read-only into the container.
-      # Weekly retrain writes new files here; /reload-model endpoint hot-swaps them.
+      # Retrain writes new files here; /reload-model endpoint hot-swaps them in memory.
       - ./ml/model-registry:/app/ml/model-registry:ro
 
     restart: unless-stopped

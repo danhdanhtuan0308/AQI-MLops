@@ -56,13 +56,27 @@ echo "✓ Retrain complete — $FINISH" | tee -a "$LOG_FILE"
 echo "  New model saved to: ml/model-registry/model.ubj" | tee -a "$LOG_FILE"
 
 # ── Hot-reload the running API (if it's up) ───────────────────────────────
+# Restart the container so uvicorn picks up any code changes from the volume mount,
+# then call /reload-model to swap in the new model artifacts and re-warm the cache.
 API_URL="${API_URL:-http://localhost:8000}"
 echo "" | tee -a "$LOG_FILE"
-echo "  Attempting hot-reload at $API_URL/reload-model ..." | tee -a "$LOG_FILE"
-if curl -sf -X POST "$API_URL/reload-model" -o /dev/null; then
-  echo "  ✓ API model reloaded — no restart needed" | tee -a "$LOG_FILE"
+echo "  Restarting API container to load new code + model ..." | tee -a "$LOG_FILE"
+if docker compose -f "$REPO_ROOT/docker-compose.yml" restart api 2>/dev/null; then
+  echo "  ✓ Container restarted" | tee -a "$LOG_FILE"
+  # Wait for the API to be healthy before calling reload-model
+  for i in $(seq 1 12); do
+    if curl -sf "$API_URL/health" -o /dev/null; then
+      break
+    fi
+    sleep 5
+  done
+  if curl -sf -X POST "$API_URL/reload-model" -o /dev/null; then
+    echo "  ✓ Model reloaded — cache re-warming in background" | tee -a "$LOG_FILE"
+  else
+    echo "  ⚠ /reload-model failed after restart — check API logs" | tee -a "$LOG_FILE"
+  fi
 else
-  echo "  ⚠ API not reachable. Restart manually:" | tee -a "$LOG_FILE"
-  echo "    uvicorn app.main:app --reload" | tee -a "$LOG_FILE"
+  echo "  ⚠ Docker not available / container not running. Restart manually:" | tee -a "$LOG_FILE"
+  echo "    cd $REPO_ROOT && docker compose restart api" | tee -a "$LOG_FILE"
 fi
 echo "═══════════════════════════════════════════════════════" | tee -a "$LOG_FILE"
