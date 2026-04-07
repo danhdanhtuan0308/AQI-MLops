@@ -77,8 +77,11 @@ FEATURES = [
 ]
 TARGET = "aqi_next"   # AQI 1-5 at T+1 (0-indexed → 0-4 for XGBoost internally)
 
-# Transition sample weight boost factor (Approach A)
-TRANSITION_BOOST_FACTOR = 5
+# Transition sample weight boost factors (Approach A)
+# Sustained transition (new class holds ≥2 consecutive hours): strong boost
+# Single-hour blip (new class reverts next hour): weak boost to avoid over-fitting
+TRANSITION_BOOST_FACTOR = 5   # sustained: 5×
+SINGLE_HOP_BOOST_FACTOR = 2   # single-hour blip: 2×
 
 # ── MLflow setup ──────────────────────────────────────────────────────────────
 EXPERIMENT_NAME      = "AQI-Classification"
@@ -190,6 +193,7 @@ def engineer_features(raw: pd.DataFrame) -> pd.DataFrame:
     raw["aqi_lag2"]   = grp["aqi"].shift(2)    # AQI  @ T-2
     raw["aqi_lag3"]   = grp["aqi"].shift(3)    # AQI  @ T-3
     raw["aqi_next"]   = grp["aqi"].shift(-1)   # AQI  @ T+1  ← target
+    raw["aqi_next2"]  = grp["aqi"].shift(-2)   # AQI  @ T+2  ← for sustained-transition detection
 
     # 1-hour momentum (prod features)
     raw["aqi_delta_1h"]  = raw["aqi"].astype(float) - raw["aqi_lag1"]
@@ -242,14 +246,21 @@ def build_arrays(feat_df: pd.DataFrame) -> tuple:
     y = feat_df[TARGET].astype(int).to_numpy() - 1   # 0-indexed for XGBoost
 
     # Transition-boosted sample weights
+    # Sustained = new class holds for ≥2 hours (aqi_next == aqi_next2)
+    # Single-hop = new class reverts next hour (transient blip)
     base_w    = compute_sample_weight("balanced", y)
     is_trans  = feat_df["aqi"].astype(float).values != feat_df["aqi_next"].astype(float).values
+    aqi_next2 = feat_df["aqi_next2"].fillna(feat_df["aqi_next"]).astype(float).values
+    is_sustained = is_trans & (feat_df["aqi_next"].astype(float).values == aqi_next2)
     sample_w  = base_w.copy()
-    sample_w[is_trans] *= TRANSITION_BOOST_FACTOR
+    sample_w[is_trans & ~is_sustained] *= SINGLE_HOP_BOOST_FACTOR
+    sample_w[is_sustained]             *= TRANSITION_BOOST_FACTOR
     sample_w /= sample_w.mean()   # normalise so mean weight ≈ 1
     log.info(
-        "Transition rows: %d / %d  (%.1f%%)  — boosted %.0f× in sample weights",
-        int(is_trans.sum()), len(y), 100 * is_trans.mean(), TRANSITION_BOOST_FACTOR,
+        "Transition rows: %d / %d  (%.1f%%)  — sustained=%d (%.0f×)  single-hop=%d (%.0f×)",
+        int(is_trans.sum()), len(y), 100 * is_trans.mean(),
+        int(is_sustained.sum()), TRANSITION_BOOST_FACTOR,
+        int((is_trans & ~is_sustained).sum()), SINGLE_HOP_BOOST_FACTOR,
     )
     return X, y, median, sample_w
 
