@@ -89,8 +89,8 @@ class TestEngineerFeatures:
         n_cities, n_hours = 2, 20
         raw = _make_raw(n_cities=n_cities, n_hours=n_hours)
         feat_df = engineer_features(raw)
-        # Each city loses 2 rows (lag + lead), so total = n_cities * (n_hours - 2)
-        assert len(feat_df) == n_cities * (n_hours - 2)
+        # Each city loses 4 rows: 3 for lookback lags (aqi_lag1/2/3, pm25_lag1) + 1 for aqi_next lead
+        assert len(feat_df) == n_cities * (n_hours - 4)
 
 
 # ── build_arrays ──────────────────────────────────────────────────────────────
@@ -101,28 +101,28 @@ class TestBuildArrays:
         return build_arrays(engineer_features(_make_raw()))
 
     def test_X_shape(self, arrays):
-        X, y, _ = arrays
+        X, y, _, _w = arrays
         assert X.ndim == 2
         assert X.shape[1] == len(FEATURES)
 
     def test_y_shape_matches_X(self, arrays):
-        X, y, _ = arrays
+        X, y, _, _w = arrays
         assert len(y) == len(X)
 
     def test_X_dtype_float32(self, arrays):
-        X, _, _ = arrays
+        X, _, _, _w = arrays
         assert X.dtype == np.float32
 
     def test_y_is_zero_indexed(self, arrays):
         """XGBoost requires 0-4 labels, not 1-5."""
-        _, y, _ = arrays
+        _, y, _, _w = arrays
         assert y.min() >= 0
         assert y.max() <= 4
 
     def test_no_nan_in_X(self, arrays):
-        X, _, _ = arrays
+        X, _, _, _w = arrays
         assert not np.any(np.isnan(X))
 
     def test_median_keys_match_features(self, arrays):
-        _, _, median = arrays
+        _, _, median, _w = arrays
         assert set(median.index) == set(FEATURES)

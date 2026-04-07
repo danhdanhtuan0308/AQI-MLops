@@ -41,15 +41,19 @@ ml/
 
 ---
 
-## Features (15 total)
+## Features (19 total — Approach A)
 
-Features are computed per city so there is no cross-city data leakage. Each prediction uses two consecutive rows from the same city.
+Features are computed per city so there is no cross-city data leakage. Each prediction uses four consecutive rows from the same city (T-3, T-2, T-1, T).
 
 | Feature | Source time | Description |
 |---------|-------------|-------------|
 | pm10_lag1 | T-1 | PM10 reading from the previous hour |
 | aqi_delta_1h | T-1 → T | AQI change from T-1 to T (positive = rising, negative = falling) |
 | pm10_delta_1h | T-1 → T | PM10 change from T-1 to T, captures PM10 momentum |
+| aqi_delta_2h | T-2 → T | AQI change over 2 hours — medium-term momentum |
+| aqi_delta_3h | T-3 → T | AQI change over 3 hours — sustained directional trend |
+| aqi_roll_std4 | T-3 → T | 4-hour rolling std of AQI — neighbourhood volatility (high σ = transition imminent) |
+| pm25_delta_1h | T-1 → T | PM2.5 change from T-1 to T — PM2.5 often leads AQI transitions by 1–2 hours |
 | hour_sin | T | sin(2 * pi * hour / 24), encodes the daily time cycle |
 | hour_cos | T | cos(2 * pi * hour / 24), encodes the daily time cycle |
 | month_sin | T | sin(2 * pi * month / 12), encodes the seasonal cycle |
@@ -78,7 +82,7 @@ The target aqi_next is the AQI class at T+1. Internally it is stored as 0-indexe
 | Hyperparameter search | RandomizedSearchCV, 20 trials, 3-fold cross-validation |
 | Cross-validation F1 (weighted) | 0.9425 |
 | Validation F1 (weighted) | 0.9535 |
-| Class weighting | compute_sample_weight("balanced") — no synthetic data; reweights existing rows so XGBoost penalises minority AQI classes more heavily |
+| Class weighting | compute_sample_weight("balanced") then 5× boost on transition rows (Approach A): rows where AQI changes T→T+1 receive balanced weight × 5, normalised so mean weight ≈ 1. Forces the model to prioritise AQI class-change prediction. |
 
 ### Locked Hyperparameters
 
@@ -105,16 +109,20 @@ The pipeline runs in five stages:
 load_data()
   Query last 365 days from Athena aqi_db.aqi_unified (rolling window; current_timestamp used at runtime so the window slides forward 1 day automatically on each daily retrain)
 
-engineer_features()
-  Compute lag features, sin/cos time encodings, pm25_ratio, and the target column
+engineer_features()  — Approach A
+  Compute lag features (T-1 through T-3), sin/cos time encodings, pm25_ratio,
+  4-hour rolling AQI std, PM2.5 delta, and the target column
+  Drops rows where any 3-hour lag or the target is undefined
 
 build_arrays()
   Convert to float32 numpy arrays
   Replace NaN values with per-feature dataset medians
   Convert target labels to 0-indexed integers
+  Compute transition-boosted sample weights:
+    balanced_weight * 5 for rows where AQI changes T→T+1 (normalised to mean≈1)
 
 XGBClassifier.fit()
-  Train on 100 percent of data using locked hyperparameters
+  Train on 100 percent of data using locked hyperparameters and transition-boosted weights
 
 model-registry/
   Write model.ubj, features.json, and median.json to disk

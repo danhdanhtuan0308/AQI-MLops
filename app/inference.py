@@ -13,16 +13,20 @@ from xgboost import XGBClassifier
 # ── Paths ─────────────────────────────────────────────────────────────────────
 REGISTRY_DIR = Path(__file__).parent.parent / "ml" / "model-registry"
 
-# ── Feature schema (must match ml/train.py exactly) ───────────────────────────
+# ── Feature schema (Approach A — 19 features, must match ml/train.py exactly) ─────────
 FEATURES: list[str] = [
-    "pm10_lag1",     # PM10 at T-1
-    "aqi_delta_1h",  # AQI momentum: T - (T-1)
-    "pm10_delta_1h", # PM10 momentum: T - (T-1)
-    "hour_sin",      # sin(2π·hour/24)
-    "hour_cos",      # cos(2π·hour/24)
-    "month_sin",     # sin(2π·month/12)
-    "month_cos",     # cos(2π·month/12)
-    "pm25_ratio",    # PM2.5 / Σ pollutants at T
+    "pm10_lag1",       # PM10 at T-1
+    "aqi_delta_1h",   # AQI momentum: T - (T-1)
+    "pm10_delta_1h",  # PM10 momentum: T - (T-1)
+    "aqi_delta_2h",   # AQI momentum: T - (T-2)                  ← NEW
+    "aqi_delta_3h",   # AQI momentum: T - (T-3)                  ← NEW
+    "aqi_roll_std4",  # 4-hour rolling AQI std (volatility)       ← NEW
+    "pm25_delta_1h",  # PM2.5 momentum: T - (T-1)                ← NEW
+    "hour_sin",       # sin(2π·hour/24)
+    "hour_cos",       # cos(2π·hour/24)
+    "month_sin",      # sin(2π·month/12)
+    "month_cos",      # cos(2π·month/12)
+    "pm25_ratio",     # PM2.5 / Σ pollutants at T
     "co", "no", "no2", "o3", "so2", "nh3", "pm10",  # point-in-time pollutants at T
 ]
 
@@ -167,16 +171,20 @@ def _safe(val, fallback: float = 0.0) -> float:
 
 
 def build_feature_vector(
+    row_t3: dict,
+    row_t2: dict,
     row_prev: dict,
     row_curr: dict,
     median: dict,
 ) -> np.ndarray:
     """
-    Build the 15-feature (1, 15) float32 array for a single (T-1, T) pair.
+    Build the 19-feature (1, 19) float32 array for a single (T-3, T-2, T-1, T) window.
 
-    row_prev  — Athena row at T-1: needs 'pm10'
-    row_curr  — Athena row at T:   needs 'timestamp', 'aqi', pollutant columns
-    median    — fallback dict keyed by feature name
+    row_t3   — Athena row at T-3: needs 'aqi'
+    row_t2   — Athena row at T-2: needs 'aqi'
+    row_prev — Athena row at T-1: needs 'aqi', 'pm10', 'pm2_5'
+    row_curr — Athena row at T:   needs 'timestamp', 'aqi', 'pm10', 'pm2_5', pollutants
+    median   — fallback dict keyed by feature name (from model-registry/median.json)
     """
     ts    = row_curr["timestamp"]
     hour  = ts.hour  if hasattr(ts, "hour")  else int(str(ts)[11:13])
@@ -187,9 +195,6 @@ def build_feature_vector(
     o3    = _safe(row_curr.get("o3"),    median.get("o3", 0))
     so2   = _safe(row_curr.get("so2"),   median.get("so2", 0))
 
-    # pm25_ratio: precomputed at T from current sensor readings — no future leakage.
-    # median.json has no raw pm2_5 key (only engineered features), so fall back to
-    # the training-set median ratio directly when the pm2_5 sensor reading is unavailable.
     try:
         _pm2_5 = float(row_curr["pm2_5"])
         if np.isnan(_pm2_5):
@@ -197,15 +202,32 @@ def build_feature_vector(
         pm25_ratio = round(_pm2_5 / (_pm2_5 + pm10 + no2 + o3 + so2 + 1e-9), 4)
     except (TypeError, ValueError, KeyError):
         pm25_ratio = float(median.get("pm25_ratio", 0.1))
+        _pm2_5     = float(median.get("pm25_ratio", 0.1)) * (pm10 + no2 + o3 + so2 + 1e-9)
 
-    aqi_lag1  = _safe(row_prev.get("aqi"),  median.get("pm10_lag1", 0))  # only used for delta
-    pm10_lag1 = _safe(row_prev.get("pm10"), median.get("pm10_lag1", 0))
-    aqi_curr  = _safe(row_curr.get("aqi"),  median.get("aqi_delta_1h", 0))
+    # T-1 values (row_prev)
+    aqi_lag1   = _safe(row_prev.get("aqi"),  median.get("aqi_delta_1h", 0))
+    pm10_lag1  = _safe(row_prev.get("pm10"), median.get("pm10_lag1", 0))
+    pm25_lag1  = _safe(row_prev.get("pm2_5"), _pm2_5)
+
+    # T-2 and T-3 AQI (with graceful fallback to T-1 value)
+    aqi_lag2   = _safe(row_t2.get("aqi"),  aqi_lag1)
+    aqi_lag3   = _safe(row_t3.get("aqi"),  aqi_lag1)
+
+    aqi_curr   = _safe(row_curr.get("aqi"), median.get("aqi_delta_1h", 0))
+    pm10_curr  = pm10
+
+    # 4-hour rolling AQI std (sample std, matches pandas rolling ddof=1)
+    _aqi_vals     = [aqi_lag3, aqi_lag2, aqi_lag1, aqi_curr]
+    aqi_roll_std4 = round(float(np.std(_aqi_vals, ddof=1)), 4)
 
     feat = {
         "pm10_lag1":     pm10_lag1,
-        "aqi_delta_1h":  round(aqi_curr - aqi_lag1, 4),
-        "pm10_delta_1h": round(pm10 - pm10_lag1, 4),
+        "aqi_delta_1h":  round(aqi_curr  - aqi_lag1,  4),
+        "pm10_delta_1h": round(pm10_curr - pm10_lag1, 4),
+        "aqi_delta_2h":  round(aqi_curr  - aqi_lag2,  4),
+        "aqi_delta_3h":  round(aqi_curr  - aqi_lag3,  4),
+        "aqi_roll_std4": aqi_roll_std4,
+        "pm25_delta_1h": round(_pm2_5    - pm25_lag1, 4),
         "hour_sin":      float(np.sin(2 * np.pi * hour / 24)),
         "hour_cos":      float(np.cos(2 * np.pi * hour / 24)),
         "month_sin":     float(np.sin(2 * np.pi * month / 12)),
@@ -247,29 +269,31 @@ def batch_predict(
 ) -> list[dict]:
     """
     Given a time-sorted list of raw Athena rows, build the feature matrix
-    for every consecutive (T-1, T) window and return predicted vs actual AQI.
+    for every consecutive (T-3, T-2, T-1, T) window and return predicted vs actual AQI.
 
     Prediction at position i  →  predicted AQI for rows[i+1]
     Ground truth               →  rows[i+2]["aqi"]  (actual T+1)
 
+    Requires at least 5 rows (3 for lookback + 1 current + 1 ground-truth).
     Returns list of {timestamp, predicted, actual, current_aqi}.
     """
-    if len(rows) < 3:
+    if len(rows) < 5:
         return []
 
-    # Build the full feature matrix in one pass
+    # Build the full feature matrix in one pass (each window needs 4 rows)
     vectors = [
-        build_feature_vector(rows[i - 1], rows[i], median)[0]
-        for i in range(1, len(rows) - 1)
+        build_feature_vector(rows[i - 3], rows[i - 2], rows[i - 1], rows[i], median)[0]
+        for i in range(3, len(rows) - 1)
     ]
     X_batch     = np.array(vectors, dtype="float32")
     proba_batch = model.predict_proba(X_batch)          # (N, 5)
     preds       = np.argmax(proba_batch, axis=1) + 1    # 1-indexed
 
     results = []
-    for i, pred in enumerate(preds):
-        row_curr = rows[i + 1]
-        row_next = rows[i + 2]
+    for idx, pred in enumerate(preds):
+        i        = idx + 3
+        row_curr = rows[i]
+        row_next = rows[i + 1]
         try:
             actual = max(1, min(5, int(float(row_next["aqi"]))))
         except (TypeError, ValueError):

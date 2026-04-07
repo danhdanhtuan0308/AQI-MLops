@@ -60,16 +60,25 @@ BEST_PARAMS: dict  = cfg[SEARCH_KEY]["best_params"]
 CV_F1: float       = float(cfg[SEARCH_KEY]["best_cv_f1"])
 VAL_F1: float      = float(cfg["selected_model"]["validation_f1"])
 
-# ── Feature / target schema ───────────────────────────────────────────────────
+# ── Feature / target schema (Approach A — 19 features) ─────────────────────────
+# Extended from 15-feat PROD: adds multi-hour AQI momentum and PM2.5 delta.
+# +4 features vs original prod: aqi_delta_2h, aqi_delta_3h, aqi_roll_std4, pm25_delta_1h
 FEATURES = [
-    "pm10_lag1",                                       # Historical Trend (T-1)
-    "aqi_delta_1h",                                    # AQI momentum    (T - T-1)
-    "pm10_delta_1h",                                   # PM10 momentum   (T - T-1)
-    "hour_sin", "hour_cos",                            # Temporal Cycle  (T)
-    "month_sin", "month_cos",                          # Seasonal Cycle  (T)
+    "pm10_lag1",       # Historical PM10 level         (T-1)
+    "aqi_delta_1h",   # AQI momentum 1-hour           (T - T-1)
+    "pm10_delta_1h",  # PM10 momentum 1-hour          (T - T-1)
+    "aqi_delta_2h",   # AQI momentum 2-hour           (T - T-2)  ← NEW
+    "aqi_delta_3h",   # AQI momentum 3-hour sustained (T - T-3)  ← NEW
+    "aqi_roll_std4",  # 4-hour rolling AQI std (volatility)       ← NEW
+    "pm25_delta_1h",  # PM2.5 momentum 1-hour         (T - T-1)  ← NEW
+    "hour_sin", "hour_cos",    # Temporal Cycle  (T)
+    "month_sin", "month_cos",  # Seasonal Cycle  (T)
     "pm25_ratio", "co", "no", "no2", "o3", "so2", "nh3", "pm10",  # Point-in-time (T)
 ]
 TARGET = "aqi_next"   # AQI 1-5 at T+1 (0-indexed → 0-4 for XGBoost internally)
+
+# Transition sample weight boost factor (Approach A)
+TRANSITION_BOOST_FACTOR = 5
 
 # ── MLflow setup ──────────────────────────────────────────────────────────────
 EXPERIMENT_NAME      = "AQI-Classification"
@@ -135,13 +144,17 @@ def load_data(lookback_days: int | None = None) -> pd.DataFrame:
 
 def engineer_features(raw: pd.DataFrame) -> pd.DataFrame:
     """
-    Build per-city lag / lead features and temporal-cycle encodings.
+    Build per-city lag / lead features and temporal-cycle encodings — Approach A (19 features).
 
     Feature diagram
     ---------------
     pm10_lag1             (T-1)  Historical PM10 level
     aqi_delta_1h          (T)    AQI momentum (T − T-1): rising (+) or falling (−)
     pm10_delta_1h         (T)    PM10 momentum (T − T-1)
+    aqi_delta_2h          (T)    AQI momentum over 2 hours (T − T-2)      ← NEW
+    aqi_delta_3h          (T)    AQI momentum over 3 hours (T − T-3)      ← NEW
+    aqi_roll_std4         (T)    4-hour rolling std of AQI (volatility)    ← NEW
+    pm25_delta_1h         (T)    PM2.5 momentum (T − T-1)                  ← NEW
     hour_sin, hour_cos    (T)    Temporal cycle — time of day
     month_sin, month_cos  (T)    Seasonal cycle — month of year
     pm25_ratio            (T)    PM2.5 share of total pollution burden
@@ -149,6 +162,8 @@ def engineer_features(raw: pd.DataFrame) -> pd.DataFrame:
       so2, nh3, pm10
     ─────────────────────────────────────────────────────────────────
     TARGET  aqi_next      (T+1)  Next-hour AQI class (1–5)
+
+    Requires at least 4 consecutive rows per city (for 3-hour lags + rolling std).
     """
     raw["timestamp"] = pd.to_datetime(raw["timestamp"], utc=True)
 
@@ -168,17 +183,33 @@ def engineer_features(raw: pd.DataFrame) -> pd.DataFrame:
     raw = raw.sort_values(["city_slug", "timestamp"]).reset_index(drop=True)
 
     # Per-city lag / lead — prevents cross-city data leakage
-    grp               = raw.groupby("city_slug", sort=False)
-    raw["aqi_lag1"]   = grp["aqi"].shift(1)         # AQI  @ T-1
-    raw["pm10_lag1"]  = grp["pm10"].shift(1)        # PM10 @ T-1
-    raw["aqi_next"]   = grp["aqi"].shift(-1)        # AQI  @ T+1  ← target
-    # Delta features: momentum (rate of change from T-1 → T)
+    grp              = raw.groupby("city_slug", sort=False)
+    raw["pm10_lag1"]  = grp["pm10"].shift(1)   # PM10 @ T-1
+    raw["pm25_lag1"]  = grp["pm2_5"].shift(1)  # PM2.5 @ T-1  (for pm25_delta_1h)
+    raw["aqi_lag1"]   = grp["aqi"].shift(1)    # AQI  @ T-1  (for deltas)
+    raw["aqi_lag2"]   = grp["aqi"].shift(2)    # AQI  @ T-2
+    raw["aqi_lag3"]   = grp["aqi"].shift(3)    # AQI  @ T-3
+    raw["aqi_next"]   = grp["aqi"].shift(-1)   # AQI  @ T+1  ← target
+
+    # 1-hour momentum (prod features)
     raw["aqi_delta_1h"]  = raw["aqi"].astype(float) - raw["aqi_lag1"]
     raw["pm10_delta_1h"] = raw["pm10"].astype(float) - raw["pm10_lag1"]
 
-    # Drop first/last row of each city (lag/lead undefined)
+    # Extended momentum features (Approach A)
+    raw["aqi_delta_2h"]  = raw["aqi"].astype(float) - raw["aqi_lag2"]
+    raw["aqi_delta_3h"]  = raw["aqi"].astype(float) - raw["aqi_lag3"]
+    raw["pm25_delta_1h"] = raw["pm2_5"].astype(float) - raw["pm25_lag1"]
+
+    # 4-hour rolling AQI std — captures neighbourhood volatility
+    # min_periods=2 so rows at the start of each city's history are kept
+    raw["aqi_roll_std4"] = (
+        grp["aqi"].transform(lambda x: x.rolling(4, min_periods=2).std()).round(4)
+    )
+
+    # Drop rows where any required lag or target is undefined
+    # aqi_lag3 is the deepest lag needed; dropna on it also cleans aqi_lag1/2
     feat_df = (
-        raw.dropna(subset=["pm10_lag1", "aqi_next"])
+        raw.dropna(subset=["pm10_lag1", "aqi_lag3", "aqi_roll_std4", "aqi_next"])
            .copy()
            .reset_index(drop=True)
     )
@@ -196,12 +227,31 @@ def build_arrays(feat_df: pd.DataFrame) -> tuple:
     Build float32 numpy arrays from the full dataset.
     NaN is imputed with the dataset median.
     XGBoost requires 0-indexed labels (0–4); values are shifted by -1.
-    Returns (X, y, median).
+
+    Sample weights — Approach A transition boost:
+      1. Balanced class weights (combat AQI class imbalance)
+      2. Rows where AQI changes T→T+1 (transition rows) get an additional
+         TRANSITION_BOOST_FACTOR (5×) weight on top of the balanced weight.
+         Dividing by the mean keeps gradient magnitudes comparable to the
+         non-boosted baseline.
+
+    Returns (X, y, median, sample_weights).
     """
     median = feat_df[FEATURES].median()
     X = feat_df[FEATURES].fillna(median).to_numpy(dtype="float32")
     y = feat_df[TARGET].astype(int).to_numpy() - 1   # 0-indexed for XGBoost
-    return X, y, median
+
+    # Transition-boosted sample weights
+    base_w    = compute_sample_weight("balanced", y)
+    is_trans  = feat_df["aqi"].astype(float).values != feat_df["aqi_next"].astype(float).values
+    sample_w  = base_w.copy()
+    sample_w[is_trans] *= TRANSITION_BOOST_FACTOR
+    sample_w /= sample_w.mean()   # normalise so mean weight ≈ 1
+    log.info(
+        "Transition rows: %d / %d  (%.1f%%)  — boosted %.0f× in sample weights",
+        int(is_trans.sum()), len(y), 100 * is_trans.mean(), TRANSITION_BOOST_FACTOR,
+    )
+    return X, y, median, sample_w
 
 
 # ── 4. Main pipeline ──────────────────────────────────────────────────────────
@@ -236,7 +286,7 @@ def main() -> None:
     # ── Data ─────────────────────────────────────────────────────────────────────
     raw     = load_data(args.lookback_days)
     feat_df = engineer_features(raw)
-    X, y, median = build_arrays(feat_df)
+    X, y, median, sample_weights = build_arrays(feat_df)
 
     # Log class distribution so imbalance is visible in MLflow
     unique, counts = np.unique(y, return_counts=True)
@@ -258,7 +308,7 @@ def main() -> None:
         n_jobs=-1,
         **BEST_PARAMS,
     )
-    model.fit(X, y, sample_weight=compute_sample_weight("balanced", y), verbose=False)
+    model.fit(X, y, sample_weight=sample_weights, verbose=False)
     log.info("Training complete")
 
     # ── MLflow run ─────────────────────────────────────────────────────────────
@@ -271,8 +321,10 @@ def main() -> None:
         mlflow.log_param("search_strategy", SEARCH_KEY)
         mlflow.log_param("n_features",      len(FEATURES))
         mlflow.log_param("features",        json.dumps(FEATURES))
-        mlflow.log_param("total_rows",      len(X))
-        mlflow.log_param("lookback_days",   args.lookback_days or "full")
+        mlflow.log_param("total_rows",               len(X))
+        mlflow.log_param("lookback_days",              args.lookback_days or "full")
+        mlflow.log_param("transition_boost_factor",    TRANSITION_BOOST_FACTOR)
+        mlflow.log_param("approach",                   "A-19feat-transition-boost")
 
         # --- reference metrics from hyper-parameter search --------------------
         mlflow.log_metric("cv_f1",           CV_F1)

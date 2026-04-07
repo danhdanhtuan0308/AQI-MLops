@@ -263,16 +263,16 @@ def predict_city(city_slug: str) -> JSONResponse:
         FROM aqi_db.aqi_unified
         WHERE city_slug = '{slug}'
         ORDER BY timestamp DESC
-        LIMIT 2
+        LIMIT 4
     """)
-    if len(df) < 2:
-        raise HTTPException(422, "Not enough historical rows to compute lag features")
+    if len(df) < 4:
+        raise HTTPException(422, "Not enough historical rows to compute lag features (need 4)")
 
     df = df.sort_values("timestamp").reset_index(drop=True)
     df["aqi"] = pd.to_numeric(df["aqi"], errors="coerce").clip(upper=5)
     rows = df.to_dict("records")
 
-    X      = build_feature_vector(rows[0], rows[1], _median)
+    X      = build_feature_vector(rows[0], rows[1], rows[2], rows[3], _median)
     result = predict_single(_model, X)
 
     current_aqi  = int(rows[1]["aqi"])
@@ -310,7 +310,7 @@ def city_history(
     if cached:
         return JSONResponse(cached, headers={"X-Cache": "HIT"})
 
-    fetch = hours + 2   # extra rows needed for lag computation
+    fetch = hours + 4   # extra rows needed for 3-hour lags (Approach A)
     df = _athena(f"""
         SELECT timestamp, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
         FROM aqi_db.aqi_unified
@@ -362,12 +362,12 @@ def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1,
     recent_label = "today"        if window_days == 1 else "last 7 days"
 
     # Track driftable model features.
-    # Delta features (aqi_delta_1h, pm10_delta_1h) are intentionally excluded:
-    # their mean is always ~0 (mean-reverting by definition), so z-score drift
-    # is always ~0 regardless of actual distribution changes. They are model
-    # features but not drift-monitorable via z-score on means.
+    # Mean-reverting delta features (aqi_delta_*h, pm10_delta_1h, pm25_delta_1h)
+    # are excluded: their mean is always ~0 so z-score drift is always ~0.
     # hour/month sin/cos omitted — deterministic, cannot drift.
-    feature_cols = ["pm10_lag1", "pm25_ratio", "co", "no", "no2", "o3", "so2", "nh3", "pm10"]
+    # aqi_roll_std4 IS drift-monitorable (volatility can increase/decrease).
+    feature_cols = ["pm10_lag1", "pm25_ratio", "aqi_roll_std4",
+                    "co", "no", "no2", "o3", "so2", "nh3", "pm10"]
     features_out: dict = {}
     for col in feature_cols:
         ref_v = ref_df[col].dropna()
@@ -402,8 +402,8 @@ def _build_drift_payload(slug: str, df: pd.DataFrame, window_days: int = 1,
         from collections import Counter
         ref_rows_list = ref_df.sort_values("timestamp").to_dict("records")
         rec_rows_list = recent_df.sort_values("timestamp").to_dict("records")
-        ref_preds = batch_predict(model, median, ref_rows_list) if len(ref_rows_list) >= 3 else []
-        rec_preds = batch_predict(model, median, rec_rows_list) if len(rec_rows_list) >= 3 else []
+        ref_preds = batch_predict(model, median, ref_rows_list) if len(ref_rows_list) >= 5 else []
+        rec_preds = batch_predict(model, median, rec_rows_list) if len(rec_rows_list) >= 5 else []
         if ref_preds and rec_preds:
             ref_counts = Counter(r["predicted"] for r in ref_preds)
             rec_counts = Counter(r["predicted"] for r in rec_preds)
@@ -519,7 +519,7 @@ def global_metrics(
     if cached:
         return JSONResponse(cached, headers={"X-Cache": "HIT"})
 
-    limit = hours + 2
+    limit = hours + 4
     try:
         df = _athena(f"""
             SELECT timestamp, city_slug, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
@@ -538,7 +538,7 @@ def global_metrics(
     all_preds: list[dict] = []
     for _slug, city_df in df.groupby("city_slug"):
         rows = city_df.sort_values("timestamp").to_dict("records")
-        if len(rows) >= 3:
+        if len(rows) >= 5:
             all_preds.extend(batch_predict(_model, _median, rows))
 
     valid = [
@@ -600,7 +600,7 @@ def global_accuracy_trend(
     if cached:
         return JSONResponse(cached, headers={"X-Cache": "HIT"})
 
-    hours = weeks * 7 * 24 + 2
+    hours = weeks * 7 * 24 + 4
     try:
         df = _athena(f"""
             SELECT timestamp, city_slug, aqi, co, no, no2, o3, so2, pm2_5, pm10, nh3
@@ -619,7 +619,7 @@ def global_accuracy_trend(
     all_preds: list[dict] = []
     for _slug, city_df in df.groupby("city_slug"):
         rows = city_df.sort_values("timestamp").to_dict("records")
-        if len(rows) >= 3:
+        if len(rows) >= 5:
             all_preds.extend(batch_predict(_model, _median, rows))
 
     valid = [r for r in all_preds if r["actual"] is not None and r.get("timestamp")]
@@ -698,15 +698,15 @@ def warm_cache() -> dict:
         rows = city_df.sort_values("timestamp").to_dict("records")
 
         # History windows
-        if len(rows) >= 3:
+        if len(rows) >= 5:
             history = batch_predict(_model, _median, rows)
             for h in (24, 48, 72, 168):
                 window = history[-h:] if len(history) > h else history
                 pipe_entries.append((f"aqi:history:{slug}:{h}", json.dumps(window, default=str)))
 
         # Predict
-        if len(rows) >= 2:
-            X = build_feature_vector(rows[-2], rows[-1], _median)
+        if len(rows) >= 4:
+            X = build_feature_vector(rows[-4], rows[-3], rows[-2], rows[-1], _median)
             result = predict_single(_model, X)
             current_aqi = max(1, min(5, int(float(rows[-1]["aqi"] or 1))))
             as_of_ts    = pd.Timestamp(rows[-1]["timestamp"])
@@ -750,7 +750,7 @@ def warm_cache() -> dict:
         if slug2 not in KNOWN_CITIES:
             continue
         rows2 = city_df2.sort_values("timestamp").to_dict("records")
-        if len(rows2) >= 3:
+        if len(rows2) >= 5:
             all_global_preds.extend(batch_predict(_model, _median, rows2))
 
     # Global metrics — filter all_global_preds by timestamp window (no extra batch_predict calls)

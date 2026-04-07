@@ -1,1 +1,1 @@
-{"pm10_lag1":15.06,"aqi_delta_1h":0.0,"pm10_delta_1h":0.05,"hour_sin":0.0,"hour_cos":0.0,"month_sin":0.0,"month_cos":0.0,"pm25_ratio":0.1059,"co":159.52,"no":0.02,"no2":2.88,"o3":57.47,"so2":1.58,"nh3":0.62,"pm10":15.05}
+{"pm10_lag1":14.68,"aqi_delta_1h":0.0,"pm10_delta_1h":0.05,"aqi_delta_2h":0.0,"aqi_delta_3h":0.0,"aqi_roll_std4":0.0,"pm25_delta_1h":0.03,"hour_sin":0.0,"hour_cos":0.0,"month_sin":0.0,"month_cos":0.0,"pm25_ratio":0.105,"co":156.17,"no":0.01,"no2":2.71,"o3":57.55,"so2":1.48,"nh3":0.58,"pm10":14.68}
