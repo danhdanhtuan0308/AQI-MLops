@@ -2,6 +2,8 @@
 
 The production web service that serves AQI predictions, history charts, drift analysis, and live model metrics. Deployed behind nginx on an EC2 t4g.small (ARM64 Graviton2). All prediction endpoints are served from Redis and respond in under 1 millisecond. Athena is only queried during the /warm-cache batch run, which is triggered by Lambda B after every hourly merge.
 
+**Current model: Approach A — XGBoost 19-feature model with 5× transition sample boost, trained on a rolling 365-day window.**
+
 ---
 
 ## Directory Structure
@@ -67,7 +69,7 @@ Calling POST /warm-cache triggers the following steps:
 
 1. Query Athena for the last 340 hours of sensor data for all 99 cities in a single SQL query.
 2. Group the rows by city.
-3. For each city, build a 15-feature vector from the last two rows and run predict_single.
+3. For each city, build a 19-feature vector from the last four rows and run predict_single.
 4. Cache the prediction result under aqi:predict:{slug} (2-hour TTL).
 5. Cache four history windows under aqi:history:{slug}:24, :48, :72, and :168.
 6. Cache per-city drift payloads under aqi:drift:{slug}:1d and aqi:drift:{slug}:7d.
@@ -88,38 +90,46 @@ Core ML inference logic, isolated from FastAPI so it can be tested independently
 | Function | Description |
 |----------|-------------|
 | load_artifacts() | Loads model.ubj, median.json, and features.json from ml/model-registry/ |
-| build_feature_vector(prev_row, row, median) | Engineers 15 features from two consecutive sensor rows |
+| build_feature_vector(row_t3, row_t2, row_prev, row_curr, median) | Engineers 19 features from four consecutive sensor rows (T-3, T-2, T-1, T) |
 | predict_single(model, X) | Returns predicted AQI class (1-5), label, color, and probabilities dict |
-| batch_predict(model, median, rows) | Runs windowed predictions over a time-sorted list of rows, returns predicted and actual pairs |
+| batch_predict(model, median, rows) | Runs windowed predictions over a time-sorted list of rows (minimum 5 rows), returns predicted and actual pairs |
 
 ### How batch_predict generates ground truth comparisons
 
-For each position i in the rows list:
-- Features come from rows at i-1 and i (time T-1 and T)
+For each position i (starting at 3) in the rows list:
+- Features come from rows at i-3, i-2, i-1, and i (time T-3, T-2, T-1, T) — the 3-hour lookback window required by Approach A
 - The prediction is the model output for time T+1
-- The actual value compared against is rows[i+2]["aqi"], which is the real observed AQI at T+1
+- The actual value compared against is rows[i+1]["aqi"], which is the real observed AQI at T+1
 
 This means every prediction in the history chart was a genuine forward-in-time forecast. The model only saw data up to time T when making each prediction.
 
-### Feature list (15 total)
+### Feature list (19 total — Approach A)
 
 | Feature | Source | Description |
 |---------|--------|-------------|
-| pm10_lag1 | Previous row (T-1) | PM10 from the previous hour |
-| aqi_delta_1h | T-1 → T | AQI change from T-1 to T (positive = rising, negative = falling) |
-| pm10_delta_1h | T-1 → T | PM10 change from T-1 to T, captures PM10 momentum |
-| hour_sin | Current row (T) | sin(2 * pi * hour / 24), daily cycle |
-| hour_cos | Current row (T) | cos(2 * pi * hour / 24), daily cycle |
-| month_sin | Current row (T) | sin(2 * pi * month / 12), seasonal cycle |
-| month_cos | Current row (T) | cos(2 * pi * month / 12), seasonal cycle |
-| pm25_ratio | Current row (T) | PM2.5 divided by sum of all major pollutants |
-| co | Current row (T) | Carbon monoxide |
-| no | Current row (T) | Nitric oxide |
-| no2 | Current row (T) | Nitrogen dioxide |
-| o3 | Current row (T) | Ozone |
-| so2 | Current row (T) | Sulphur dioxide |
-| nh3 | Current row (T) | Ammonia |
-| pm10 | Current row (T) | Particulate matter under 10 micrometers |
+| pm10_lag1 | T-1 row | PM10 from the previous hour |
+| aqi_delta_1h | T-1 → T | AQI change from T-1 to T (momentum) |
+| pm10_delta_1h | T-1 → T | PM10 change from T-1 to T |
+| aqi_delta_2h | T-2 → T | AQI change over 2 hours (medium-term momentum) ← NEW |
+| aqi_delta_3h | T-3 → T | AQI change over 3 hours (sustained directional trend) ← NEW |
+| aqi_roll_std4 | T-3…T | 4-hour rolling std of AQI (neighbourhood volatility) ← NEW |
+| pm25_delta_1h | T-1 → T | PM2.5 change from T-1 to T (PM2.5 often leads AQI transitions) ← NEW |
+| hour_sin | T | sin(2π × hour / 24), daily cycle |
+| hour_cos | T | cos(2π × hour / 24), daily cycle |
+| month_sin | T | sin(2π × month / 12), seasonal cycle |
+| month_cos | T | cos(2π × month / 12), seasonal cycle |
+| pm25_ratio | T | PM2.5 / (PM2.5 + PM10 + NO2 + O3 + SO2) |
+| co | T | Carbon monoxide |
+| no | T | Nitric oxide |
+| no2 | T | Nitrogen dioxide |
+| o3 | T | Ozone |
+| so2 | T | Sulphur dioxide |
+| nh3 | T | Ammonia |
+| pm10 | T | Particulate matter under 10 micrometers |
+
+### Approach A — transition boost
+
+Training uses a **5× sample weight** on transition rows (rows where the AQI class changes from T to T+1). These rows represent only ~6.5% of training data but are the hardest cases to predict and the most important operationally. The boost is applied on top of balanced class weights via `sample_weight` in `model.fit()`.
 
 ---
 
