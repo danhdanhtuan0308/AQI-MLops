@@ -40,7 +40,8 @@ def ensure_test_artifacts():
 
         reg.mkdir(parents=True, exist_ok=True)
         rng = np.random.default_rng(42)
-        X = rng.random((100, 15)).astype("float32")
+        n_feat = len(FEATURES)
+        X = rng.random((100, n_feat)).astype("float32")
         y = rng.integers(0, 5, 100)
 
         m = XGBClassifier(
@@ -54,12 +55,7 @@ def ensure_test_artifacts():
         m.fit(X, y)
         m.save_model(str(reg / "model.ubj"))
 
-        features = [
-            "pm10_lag1", "aqi_delta_1h", "pm10_delta_1h",
-            "hour_sin", "hour_cos", "month_sin", "month_cos",
-            "pm25_ratio", "co", "no", "no2", "o3", "so2", "nh3", "pm10",
-        ]
-        (reg / "median.json").write_text(json.dumps({f: 1.0 for f in features}))
+        (reg / "median.json").write_text(json.dumps({f: 1.0 for f in FEATURES}))
         (reg / "features.json").write_text(
-            json.dumps({"features": features, "target": "aqi_next"}, indent=2)
+            json.dumps({"features": FEATURES, "target": "aqi_next"}, indent=2)
         )
