@@ -14,6 +14,7 @@ Run
 """
 from __future__ import annotations
 
+import contextlib
 import datetime
 import json
 import os
@@ -56,7 +57,33 @@ KNOWN_CITIES: dict[str, dict] = {
 }
 
 # ── App ────────────────────────────────────────────────────────────────────────
-app = FastAPI(title="AQI Prediction API", version="1.0")
+@contextlib.asynccontextmanager
+async def _lifespan(app: FastAPI):
+    global _model, _median, _redis
+    _model, _median = load_artifacts()
+    redis_url = os.environ.get("REDIS_URL", "")
+    if redis_url:
+        try:
+            _redis = redis_lib.Redis.from_url(
+                redis_url, decode_responses=True, socket_connect_timeout=2
+            )
+            _redis.ping()
+        except Exception:
+            _redis = None
+    _cache_feature_importance()
+
+    from .telemetry import setup_logging, setup_metrics_push, setup_system_metrics
+    setup_metrics_push()
+    setup_system_metrics()
+    setup_logging()
+
+    _warm_interval = int(os.environ.get("WARM_INTERVAL_SEC", "3600"))
+    threading.Thread(target=_warm_loop, args=(_warm_interval,), daemon=True).start()
+
+    yield
+
+
+app = FastAPI(title="AQI Prediction API", version="1.0", lifespan=_lifespan)
 
 # ── Observability: tracing (must be before ASGI stack builds) ────────────────
 # FastAPIInstrumentor.instrument_app() adds middleware — must run at import time,
@@ -118,34 +145,6 @@ def _cache_clear(pattern: str = "aqi:*") -> None:
             _redis.delete(*keys)
     except Exception:
         pass
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    global _model, _median, _redis
-    _model, _median = load_artifacts()
-    redis_url = os.environ.get("REDIS_URL", "")
-    if redis_url:
-        try:
-            _redis = redis_lib.Redis.from_url(
-                redis_url, decode_responses=True, socket_connect_timeout=2
-            )
-            _redis.ping()
-        except Exception:
-            _redis = None
-    _cache_feature_importance()
-
-    # Observability — direct push to Grafana Cloud (no-op when env vars not set)
-    from .telemetry import setup_logging, setup_metrics_push, setup_system_metrics
-    setup_metrics_push()
-    setup_system_metrics()   # CPU, memory — must come after setup_metrics_push()
-    setup_logging()
-
-    # Self-warming background loop — keeps Redis populated independently of Lambda B.
-    # Runs every WARM_INTERVAL seconds (default 3600 = 1 hour).
-    # First warm happens 10s after startup so the cache is hot immediately.
-    _warm_interval = int(os.environ.get("WARM_INTERVAL_SEC", "3600"))
-    threading.Thread(target=_warm_loop, args=(_warm_interval,), daemon=True).start()
 
 
 def _warm_loop(interval: int) -> None:

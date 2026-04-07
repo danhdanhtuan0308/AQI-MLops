@@ -68,7 +68,7 @@ fi
 echo ""
 echo "── Verifying deployment ─────────────────────────────────"
 N_FEATS=$(curl -sf "$API_URL/health" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('n_features','?'))" 2>/dev/null || echo "?")
-echo "   n_features : $N_FEATS  (expect 19)"
+echo "   n_features : $N_FEATS  (expect 20)"
 echo "   model path : $(curl -sf "$API_URL/health" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('model_path','?'))" 2>/dev/null || echo "?")"
 
 echo ""
