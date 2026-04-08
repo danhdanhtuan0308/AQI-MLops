@@ -125,7 +125,6 @@ CITY_TIMEZONES: dict[str, str] = {
     "kabul":            "Asia/Kabul",
     "accra":            "Africa/Accra",
     "cape-town":        "Africa/Johannesburg",
-    # cities below were missing from the original dict — would have fallen back to UTC
     "sydney":           "Australia/Sydney",
     "melbourne":        "Australia/Melbourne",
     "rome":             "Europe/Rome",
@@ -248,7 +247,7 @@ def build_feature_vector(
 
 def predict_single(model: XGBClassifier, X: np.ndarray) -> dict:
     """
-    Run the model on a (1, 12) feature array.
+    Run the model on a (1, 19) feature array.
     Returns predicted class (1-5), label, color, and per-class probabilities.
     """
     proba = model.predict_proba(X)[0]           # shape (5,)
@@ -289,18 +288,8 @@ def batch_predict(
     proba_batch = model.predict_proba(X_batch)          # (N, 5)
     preds       = np.argmax(proba_batch, axis=1) + 1    # 1-indexed
 
-    # Confidence gate: suppress low-confidence class 1-3 transitions.
-    # Requires >=80% confidence to commit a new class for non-dangerous transitions.
-    # Class 4/5 always passes so early dangerous-air warnings are preserved.
-    CONF_GATE = 0.80
-    gated = list(preds)
-    for j in range(1, len(gated)):
-        if gated[j] != gated[j - 1] and int(gated[j]) < 4:
-            if float(proba_batch[j, gated[j] - 1]) < CONF_GATE:
-                gated[j] = gated[j - 1]
-
     results = []
-    for idx, pred in enumerate(gated):
+    for idx, pred in enumerate(preds):
         i        = idx + 3
         row_curr = rows[i]
         row_next = rows[i + 1]
