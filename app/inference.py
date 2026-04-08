@@ -28,7 +28,6 @@ FEATURES: list[str] = [
     "month_cos",      # cos(2π·month/12)
     "pm25_ratio",     # PM2.5 / Σ pollutants at T
     "co", "no", "no2", "o3", "so2", "nh3", "pm10",  # point-in-time pollutants at T
-    "aqi",            # current AQI class integer (T) — anchors model to present state
 ]
 
 # ── AQI class metadata ────────────────────────────────────────────────────────
@@ -241,7 +240,6 @@ def build_feature_vector(
         "so2": so2,
         "nh3": _safe(row_curr.get("nh3"), median.get("nh3", 0)),
         "pm10": pm10,
-        "aqi": aqi_curr,
     }
     return np.array([[feat[f] for f in FEATURES]], dtype="float32")
 

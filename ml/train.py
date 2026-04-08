@@ -67,10 +67,10 @@ FEATURES = [
     "pm10_lag1",       # Historical PM10 level         (T-1)
     "aqi_delta_1h",   # AQI momentum 1-hour           (T - T-1)
     "pm10_delta_1h",  # PM10 momentum 1-hour          (T - T-1)
-    "aqi_delta_2h",   # AQI momentum 2-hour           (T - T-2)  ← NEW
-    "aqi_delta_3h",   # AQI momentum 3-hour sustained (T - T-3)  ← NEW
-    "aqi_roll_std4",  # 4-hour rolling AQI std (volatility)       ← NEW
-    "pm25_delta_1h",  # PM2.5 momentum 1-hour         (T - T-1)  ← NEW
+    "aqi_delta_2h",   # AQI momentum 2-hour           (T - T-2)
+    "aqi_delta_3h",   # AQI momentum 3-hour sustained (T - T-3)
+    "aqi_roll_std4",  # 4-hour rolling AQI std (volatility)
+    "pm25_delta_1h",  # PM2.5 momentum 1-hour         (T - T-1)
     "hour_sin", "hour_cos",    # Temporal Cycle  (T)
     "month_sin", "month_cos",  # Seasonal Cycle  (T)
     "pm25_ratio", "co", "no", "no2", "o3", "so2", "nh3", "pm10",  # Point-in-time (T)
