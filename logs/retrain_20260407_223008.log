@@ -1,0 +1,61 @@
+═══════════════════════════════════════════════════════
+  AQI Daily Retrain
+  Started : 2026-04-07 22:30:08 UTC
+  Lookback: last 365 days (rolling 1-year window)
+  Log     : /Users/daniellai/MSDS_2026/AQI-MLops/ml/../logs/retrain_20260407_223008.log
+═══════════════════════════════════════════════════════
+/Users/daniellai/MSDS_2026/AQI-MLops/.venv/lib/python3.12/site-packages/mlflow/tracking/_tracking_service/utils.py:184: FutureWarning: The filesystem tracking backend (e.g., './mlruns') is deprecated as of February 2026. Consider transitioning to a database backend (e.g., 'sqlite:///mlflow.db') to take advantage of the latest MLflow features. See https://mlflow.org/docs/latest/self-hosting/migrate-from-file-store for migration guidance.
+  return FileStore(store_uri, store_uri)
+2026-04-07 18:30:09 [INFO] ======================================================================
+2026-04-07 18:30:09 [INFO]   AQI XGBoost Training Pipeline
+2026-04-07 18:30:09 [INFO]   Config  : ml/best-config.yaml
+2026-04-07 18:30:09 [INFO]   Model   : XGBoost Random Search
+2026-04-07 18:30:09 [INFO]   CV F1   : 0.942471  |  Val F1 (notebook): 0.953486
+2026-04-07 18:30:09 [INFO]   Lookback: last 365 days (rolling 1-year window)
+2026-04-07 18:30:09 [INFO] ======================================================================
+2026-04-07 18:30:21 [INFO] Loaded 849974 rows from Athena  (99 cities)  [class-6 merged: 0]
+2026-04-07 18:30:21 [INFO] After feature engineering: 849578 rows  (20 features)
+2026-04-07 18:30:22 [INFO] Transition rows: 55538 / 849578  (6.5%)  — sustained=51859 (5×)  single-hop=3679 (2×)
+2026-04-07 18:30:22 [INFO]   Class 0 (AQI 1): 256710 rows  (30.2%)
+2026-04-07 18:30:22 [INFO]   Class 1 (AQI 2): 286807 rows  (33.8%)
+2026-04-07 18:30:22 [INFO]   Class 2 (AQI 3): 152869 rows  (18.0%)
+2026-04-07 18:30:22 [INFO]   Class 3 (AQI 4): 68693 rows  (8.1%)
+2026-04-07 18:30:22 [INFO]   Class 4 (AQI 5): 84499 rows  (9.9%)
+2026-04-07 18:30:22 [INFO] Training on 849578 rows (last 365 days)
+/Users/daniellai/MSDS_2026/AQI-MLops/.venv/lib/python3.12/site-packages/xgboost/training.py:200: UserWarning: [18:30:22] WARNING: /Users/runner/work/xgboost/xgboost/src/learner.cc:782: 
+Parameters: { "use_label_encoder" } are not used.
+
+  bst.update(dtrain, iteration=i, fobj=obj)
+2026-04-07 18:30:40 [INFO] Training complete
+2026/04/07 18:30:40 WARNING mlflow.models.model: `artifact_path` is deprecated. Please use `name` instead.
+2026/04/07 18:30:42 WARNING mlflow.utils.environment: Failed to resolve installed pip version. ``pip`` will be added to conda.yaml environment spec without a version specifier.
+2026/04/07 18:30:42 INFO mlflow.models.model: Found the following environment variables used during model inference: [GRAFANA_API_KEY, OWM_API_KEY]. Please check if you need to set them when deploying the model. To disable this message, set environment variable `MLFLOW_RECORD_ENV_VARS_IN_MODEL_LOGGING` to `false`.
+/Users/daniellai/MSDS_2026/AQI-MLops/.venv/lib/python3.12/site-packages/mlflow/tracking/_model_registry/utils.py:220: FutureWarning: The filesystem model registry backend (e.g., './mlruns') is deprecated as of February 2026. Consider transitioning to a database backend (e.g., 'sqlite:///mlflow.db') to take advantage of the latest MLflow features. See https://mlflow.org/docs/latest/self-hosting/migrate-from-file-store for migration guidance.
+  return FileStore(store_uri)
+Registered model 'AQI-XGBoost' already exists. Creating a new version of this model...
+Created version '10' of model 'AQI-XGBoost'.
+2026-04-07 18:30:42 [INFO] Saved model artifacts to  ml/model-registry
+2026-04-07 18:30:42 [INFO] ======================================================================
+2026-04-07 18:30:42 [INFO]   MLflow run ID : 228874b78b564648b6f329d5308eb5c4
+2026-04-07 18:30:42 [INFO]   Experiment    : AQI-Classification
+2026-04-07 18:30:42 [INFO]   Registry name : AQI-XGBoost
+2026-04-07 18:30:42 [INFO]   Model URI     : models:/m-83d8c51ada764415a3595d8420f8055b
+2026-04-07 18:30:42 [INFO]   Tracking URI  : file:///Users/daniellai/MSDS_2026/AQI-MLops/ml/mlruns
+2026-04-07 18:30:42 [INFO]   Trained on    : 849578 rows
+2026-04-07 18:30:42 [INFO] 
+2026-04-07 18:30:42 [INFO]   Model files   : ml/model-registry/
+2026-04-07 18:30:42 [INFO]     model.ubj  — XGBoost native model
+2026-04-07 18:30:42 [INFO]     features.json — feature list for inference
+2026-04-07 18:30:42 [INFO]     median.json   — NaN imputation values
+2026-04-07 18:30:42 [INFO]   Run inference : python ml/predict.py
+2026-04-07 18:30:42 [INFO] 
+2026-04-07 18:30:42 [INFO]   Launch UI:  mlflow ui --backend-store-uri /Users/daniellai/MSDS_2026/AQI-MLops/ml/mlruns
+2026-04-07 18:30:42 [INFO] ======================================================================
+
+✓ Retrain complete — 2026-04-07 22:30:42 UTC
+  New model saved to: ml/model-registry/model.ubj
+
+  Restarting API container to load new code + model ...
+  ⚠ Docker not available / container not running. Restart manually:
+    cd /Users/daniellai/MSDS_2026/AQI-MLops/ml/.. && docker compose restart api
+═══════════════════════════════════════════════════════

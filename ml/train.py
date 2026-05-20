@@ -61,8 +61,6 @@ CV_F1: float       = float(cfg[SEARCH_KEY]["best_cv_f1"])
 VAL_F1: float      = float(cfg["selected_model"]["validation_f1"])
 
 # ── Feature / target schema (Approach A — 19 features) ─────────────────────────
-# Extended from 15-feat PROD: adds multi-hour AQI momentum and PM2.5 delta.
-# +4 features vs original prod: aqi_delta_2h, aqi_delta_3h, aqi_roll_std4, pm25_delta_1h
 FEATURES = [
     "pm10_lag1",       # Historical PM10 level         (T-1)
     "aqi_delta_1h",   # AQI momentum 1-hour           (T - T-1)
@@ -154,10 +152,10 @@ def engineer_features(raw: pd.DataFrame) -> pd.DataFrame:
     pm10_lag1             (T-1)  Historical PM10 level
     aqi_delta_1h          (T)    AQI momentum (T − T-1): rising (+) or falling (−)
     pm10_delta_1h         (T)    PM10 momentum (T − T-1)
-    aqi_delta_2h          (T)    AQI momentum over 2 hours (T − T-2)      ← NEW
-    aqi_delta_3h          (T)    AQI momentum over 3 hours (T − T-3)      ← NEW
-    aqi_roll_std4         (T)    4-hour rolling std of AQI (volatility)    ← NEW
-    pm25_delta_1h         (T)    PM2.5 momentum (T − T-1)                  ← NEW
+    aqi_delta_2h          (T)    AQI momentum over 2 hours (T − T-2)
+    aqi_delta_3h          (T)    AQI momentum over 3 hours (T − T-3)
+    aqi_roll_std4         (T)    4-hour rolling std of AQI (volatility)
+    pm25_delta_1h         (T)    PM2.5 momentum (T − T-1)
     hour_sin, hour_cos    (T)    Temporal cycle — time of day
     month_sin, month_cos  (T)    Seasonal cycle — month of year
     pm25_ratio            (T)    PM2.5 share of total pollution burden

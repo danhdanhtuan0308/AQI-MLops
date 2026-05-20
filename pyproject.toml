@@ -31,6 +31,7 @@ dependencies = [
     "opentelemetry-instrumentation-system-metrics>=0.48b0",
     "lightgbm>=4.6.0",
     "catboost>=1.2.10",
+    "shap>=0.51.0",
 ]
 
 [dependency-groups]

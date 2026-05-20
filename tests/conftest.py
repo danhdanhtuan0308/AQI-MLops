@@ -18,7 +18,7 @@ import pytest
 def ensure_test_artifacts():
     """
     If ml/model-registry/model.ubj is missing, build a minimal XGBoost model
-    (100 synthetic rows, 5 classes, 15 features) so FastAPI startup and
+    (100 synthetic rows, 5 classes, 19 features) so FastAPI startup and
     inference tests pass without the real production model.
     """
     reg = Path("ml/model-registry")

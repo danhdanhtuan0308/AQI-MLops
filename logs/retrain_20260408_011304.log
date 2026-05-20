@@ -1,0 +1,15 @@
+═══════════════════════════════════════════════════════
+  AQI Daily Retrain
+  Started : 2026-04-08 01:13:04 UTC
+  Lookback: last 365 days (rolling 1-year window)
+  Log     : /Users/daniellai/MSDS_2026/AQI-MLops/ml/../logs/retrain_20260408_011304.log
+═══════════════════════════════════════════════════════
+/Users/daniellai/MSDS_2026/AQI-MLops/.venv/lib/python3.12/site-packages/mlflow/tracking/_tracking_service/utils.py:184: FutureWarning: The filesystem tracking backend (e.g., './mlruns') is deprecated as of February 2026. Consider transitioning to a database backend (e.g., 'sqlite:///mlflow.db') to take advantage of the latest MLflow features. See https://mlflow.org/docs/latest/self-hosting/migrate-from-file-store for migration guidance.
+  return FileStore(store_uri, store_uri)
+2026-04-07 21:13:06 [INFO] ======================================================================
+2026-04-07 21:13:06 [INFO]   AQI XGBoost Training Pipeline
+2026-04-07 21:13:06 [INFO]   Config  : ml/best-config.yaml
+2026-04-07 21:13:06 [INFO]   Model   : XGBoost Random Search
+2026-04-07 21:13:06 [INFO]   CV F1   : 0.942471  |  Val F1 (notebook): 0.953486
+2026-04-07 21:13:06 [INFO]   Lookback: last 365 days (rolling 1-year window)
+2026-04-07 21:13:06 [INFO] ======================================================================
