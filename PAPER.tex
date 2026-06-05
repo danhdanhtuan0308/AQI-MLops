@@ -1,0 +1,698 @@
+% -------------------------------------------------------
+%  AQI-MLops – Conference Paper (ACM sigconf style)
+%  Author: Daniel Lai, Drexel University, May 2026
+% -------------------------------------------------------
+\PassOptionsToPackage{hyphens}{url}
+\documentclass[sigconf, nonacm]{acmart}
+
+% ---- packages -----------------------------------------
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{amsmath}
+\usepackage{microtype}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{url}
+
+% ---- allow long paths / URLs to break everywhere ------
+\urlstyle{tt}
+\def\UrlBreaks{\do\/\do\-\do\_\do\.\do\:\do\=\do\?}
+
+% ---- give LaTeX extra stretch to avoid overfull hboxes
+\emergencystretch=4em
+\tolerance=1500
+\hbadness=1500
+
+% ---- listing style ------------------------------------
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  breakatwhitespace=false,
+  frame=single,
+  backgroundcolor=\color{gray!8},
+  columns=flexible,
+  keepspaces=true,
+}
+
+% ---- hyperref (acmart loads it; just set colours) -----
+\AtBeginDocument{%
+  \hypersetup{colorlinks=true, urlcolor=blue,
+              linkcolor=black, citecolor=black}}
+
+% =======================================================
+\begin{document}
+
+\title{AQI-MLops: An End-to-End Production MLOps Pipeline
+       for Real-Time Air Quality Index Prediction
+       Across 99 Global Cities}
+
+\author{Daniel Lai}
+\affiliation{%
+  \institution{Drexel University, College of Computing \& Informatics}
+  \city{Philadelphia}
+  \state{PA}
+  \country{USA}}
+\email{dl3528@drexel.edu}
+
+% =======================================================
+\begin{abstract}
+Air quality affects the health of billions of people, yet
+accessible real-time forecasts at global scale remain scarce.
+This paper presents \textbf{AQI-MLops}, a fully automated,
+cloud-native machine learning operations (MLOps) system that
+collects live air quality sensor readings every hour for
+99 cities worldwide, stores them in a medallion data lakehouse
+on AWS, predicts the next-hour Air Quality Index (AQI) class
+using a tuned XGBoost classifier, and serves those predictions
+through a web dashboard with sub-millisecond response times.
+The system achieves a cross-validated macro F1 score of
+\textbf{0.9425} and a validation macro F1 score of
+\textbf{0.9535} across five AQI classes.  The full pipeline,
+from raw API ingest to model retraining and observability,
+runs continuously and autonomously using AWS Lambda, S3,
+Athena (Apache Iceberg), Redis, FastAPI, Docker, and Grafana
+Cloud, with CI/CD orchestrated by GitHub Actions.
+\end{abstract}
+
+\keywords{MLOps, Air Quality Index, XGBoost, AWS,
+          Apache Iceberg, FastAPI, Observability}
+
+\maketitle
+
+% =======================================================
+\section{Introduction}
+
+The World Health Organization estimates that 99\% of the
+global population breathes air that exceeds recommended
+quality limits~\cite{who2021}.  Timely, city-level AQI
+forecasts can drive behavioral decisions: whether to
+exercise outdoors, whether to issue public health alerts,
+or whether to activate industrial emission controls.
+Despite the importance of this information, most publicly
+available AQI data is either delayed batch reports or
+single-city solutions that do not generalize.
+
+This work addresses the challenge by building a
+production-grade MLOps system with three primary properties:
+
+\begin{enumerate}
+  \item \textbf{Scale}: 99 geographically diverse cities
+        spanning Asia, Europe, the Americas, and Africa.
+  \item \textbf{Freshness}: Hourly ingest, hourly prediction
+        refresh, and automated daily model retraining.
+  \item \textbf{Reliability}: ACID-consistent data storage,
+        Redis-backed sub-millisecond serving, self-healing
+        cache warming, and a full observability stack.
+\end{enumerate}
+
+The system is implemented in Python and deployed on AWS, with
+all infrastructure described as configuration rather than
+hand-operated scripts.  All code is publicly available at
+\url{https://github.com/danhdanhtuan0308/AQI-MLops}.
+
+% =======================================================
+\section{Related Work}
+
+Traditional air quality forecasting relies on numerical
+weather prediction models such as CMAQ and WRF-Chem, which
+are computationally expensive and require domain expertise
+to configure~\cite{cmaq2006}.  Data-driven approaches using
+gradient-boosted trees and recurrent neural networks have
+demonstrated competitive accuracy on city-level
+datasets~\cite{zhao2018,qi2019}, but published systems
+rarely describe the end-to-end engineering infrastructure
+required to keep such models fresh and serving at production
+quality.
+
+MLOps as a discipline formalizes the practices needed to
+operationalize ML models~\cite{sculley2015}.  Systems such
+as Uber Michelangelo~\cite{michelangelo2017} and Meta
+FBLearner Flow~\cite{fblearner2016} demonstrate
+industrial-scale MLOps but are not open-source and operate
+at a scale impractical for academic projects.  AQI-MLops
+occupies a middle ground: a real production system with real
+traffic, open-source code, and infrastructure costs within
+a research budget.
+
+% =======================================================
+\section{System Architecture}
+
+The system is composed of five sequential pipeline stages
+executed across three compute substrates: AWS Lambda, AWS
+EC2, and GitHub Actions.
+Figure~\ref{fig:pipeline} illustrates the full data flow.
+
+% --- full-width architecture diagram -------------------
+\begin{figure*}[t]
+\small
+\begin{verbatim}
+OpenWeatherMap API
+  |
+  +-- fetch_weather.py  (bulk backfill, 1 year x 99 cities)
+  |         |
+  |         +-> S3 Bronze: raw_pipeline  (Parquet / SNAPPY)
+  |
+  +-- Lambda A  (hourly EventBridge cron)
+            |
+            +-> S3 Bronze: raw_hourly  (Parquet, Hive-partitioned)
+                      |
+                  Lambda B: MERGE INTO aqi_unified  (Iceberg, ACID)
+                      |
+                  Silver: aqi_db.aqi_unified
+                      |
+                  FastAPI /warm-cache
+                      |
+                  XGBoost inference (19 features) --> Redis  (TTL 2 h)
+                      |
+                  Lambda C  (hourly + 5 min offset)
+                      |
+                  Gold: predictions Iceberg table
+                      |
+                  GitHub Actions  (daily cron)
+                      |
+                  ml/train.py --> MLflow --> model-registry/model.ubj
+\end{verbatim}
+\caption{End-to-end pipeline data flow across five sequential stages.}
+\label{fig:pipeline}
+\end{figure*}
+
+% -------------------------------------------------------
+\subsection{Data Ingestion}
+
+\textbf{Batch Backfill.}
+The script \path{data-pipeline/fetch_weather.py} seeds the
+lakehouse with one year of historical data
+(2025-03-20 to 2026-03-20) for all 99 cities.  The date
+range is split into seven-day chunks per city to respect
+the OpenWeatherMap (OWM) free-tier pagination limit.  A
+0.5-second inter-request sleep bounds throughput to
+approximately 2 requests per second, comfortably within
+OWM free-tier rate limits.  Each chunk is serialized as
+SNAPPY-compressed Parquet via PyArrow and uploaded to
+\path{s3://weather-bulk/data-pipeline/} via the AWS SDK.
+
+\textbf{Live Hourly Ingest (Lambda A).}
+An AWS EventBridge rule fires Lambda A every hour.
+Lambda A calls the OWM Current Air Pollution API for all
+99 cities and writes a single Parquet file to a
+Hive-partitioned path of the form
+\path{s3://weather-bulk/hourly/year=YYYY/month=MM/day=DD/}.
+On success, Lambda A invokes Lambda B asynchronously,
+passing the S3 key of the new file.
+
+The raw data schema captures eleven air quality measurements
+alongside city metadata, as shown in Table~\ref{tab:schema}.
+
+\begin{table}[h]
+  \caption{Raw data schema (key columns).}
+  \label{tab:schema}
+  \small
+  \begin{tabular}{@{}p{2.0cm}p{5.2cm}@{}}
+    \toprule
+    \textbf{Column} & \textbf{Type and Description} \\
+    \midrule
+    \texttt{timestamp}  & TIMESTAMP (UTC): observation time \\[2pt]
+    \texttt{city\_slug} & STRING: URL-safe city identifier \\[2pt]
+    \texttt{aqi}        & INT (1 to 5): overall AQI class \\[2pt]
+    \texttt{co}, \texttt{no2}, \texttt{o3},
+    \texttt{so2}, \texttt{pm2\_5},
+    \texttt{pm10}, \texttt{nh3}
+      & DOUBLE ($\mu$g/m$^{3}$): pollutant concentrations \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% -------------------------------------------------------
+\subsection{Data Lakehouse: Medallion Architecture}
+
+The storage layer is built on AWS S3 with Apache Iceberg
+tables registered in AWS Glue Data Catalog and queried via
+AWS Athena.
+
+\begin{itemize}
+  \item \textbf{Bronze Layer.}  Two read-only external
+        tables: \texttt{aqi\_db.raw\_pipeline} (bulk batch)
+        and \texttt{aqi\_db.raw\_hourly} (live hourly,
+        Hive-partitioned by year, month, and day).
+
+  \item \textbf{Silver Layer.}  Lambda B executes an Athena
+        \texttt{MERGE INTO aqi\_db.aqi\_unified} statement
+        keyed on \texttt{(city\_slug, timestamp)}.  This
+        provides ACID-safe deduplication and ensures
+        idempotency across overlapping pipeline runs.
+        A \texttt{source} column (value \texttt{pipeline}
+        or \texttt{live}) is written for data lineage.
+        The Iceberg format enables time-travel queries and
+        schema evolution without table rewrites.
+
+  \item \textbf{Gold Layer.}  Aggregated analytics tables
+        stored at
+        \path{s3://weather-bulk/process/BI/},
+        used by Grafana for business-intelligence dashboards.
+\end{itemize}
+
+% -------------------------------------------------------
+\subsection{Inference and Serving}
+
+When Lambda B completes the merge, it sends a
+\texttt{POST /warm-cache} request to the FastAPI service
+running on EC2.  On receiving this call, FastAPI:
+
+\begin{enumerate}
+  \item Queries Athena for the last 340 hours of sensor
+        data across all 99 cities in a single batch query.
+  \item Builds 19-dimensional feature vectors for each city
+        (see Section~\ref{sec:features}).
+  \item Runs batch XGBoost inference.
+  \item Writes all 99 city predictions to Redis with a
+        two-hour TTL.
+  \item Persists predictions to \texttt{aqi:pred\_buffer}
+        (a Redis list) for Lambda C to flush to Iceberg.
+\end{enumerate}
+
+User-facing \texttt{GET /predict/\{city\_slug\}} requests
+are served entirely from Redis, so no Athena query occurs
+at request time, yielding sub-millisecond response latency.
+A background thread calls \texttt{warm\_cache()} every
+3\,600 seconds independently of Lambda B, ensuring cache
+freshness even if Lambda B is unavailable.
+
+% -------------------------------------------------------
+\subsection{Prediction Persistence (Lambda C)}
+
+Lambda C runs at five minutes past every hour via
+EventBridge.  It reads the \texttt{aqi:pred\_buffer} list
+from Redis, writes the records as Parquet to
+\path{s3://weather-bulk/predictions/},
+and runs \texttt{INSERT INTO} on a dedicated Iceberg
+\texttt{predictions} table.  This builds a permanent,
+queryable record of every prediction the model has ever
+made, enabling retrospective drift analysis.
+
+% -------------------------------------------------------
+\subsection{Model Retraining and CI/CD}
+
+A GitHub Actions workflow (\path{daily_retrain.yml}) runs
+every day.  It invokes \path{ml/train.py}, which reads
+hyperparameters from \path{ml/best-config.yaml}, trains
+XGBoost on the full Athena dataset, logs all parameters
+and metrics to MLflow, and writes the new model artifact
+to \path{ml/model-registry/model.ubj}.
+
+The FastAPI endpoint \texttt{GET /reload-model}
+hot-swaps the in-memory model without restarting the
+container.  On every merge to \texttt{main},
+\path{cd.yml} rebuilds the Docker image and redeploys
+to EC2 via \path{deploy/redeploy.sh}.
+
+% =======================================================
+\section{Data Science}
+
+% -------------------------------------------------------
+\subsection{Exploratory Data Analysis}
+
+The AQI class distribution across the training corpus is
+shown in Table~\ref{tab:classdist}.  Classes 2 and 3
+dominate, reflecting that most cities spend most hours in
+mild-to-moderate conditions.  Classes 4 and 5, while
+minority, are the most safety-relevant and were addressed
+through class-weighted training.
+
+\begin{table}[h]
+  \caption{AQI class distribution in training data.}
+  \label{tab:classdist}
+  \small
+  \begin{tabular}{@{}clr@{}}
+    \toprule
+    \textbf{Class} & \textbf{Label} & \textbf{Proportion} \\
+    \midrule
+    1 & Good      & 11.8\% \\
+    2 & Fair      & 38.7\% \\
+    3 & Moderate  & 22.6\% \\
+    4 & Poor      & 14.0\% \\
+    5 & Very Poor & 12.9\% \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\textbf{Data Quality Issues.}
+OWM occasionally returns AQI class 6 for extreme pollution
+events outside their documented scale; these labels are
+clamped to 5 during data loading.  Lag features require at
+least three prior hours of data per city, so the first three
+rows of each city's time series are dropped before training.
+Missing mid-series hours break the lag chain and are
+also dropped.
+
+% -------------------------------------------------------
+\subsection{Feature Engineering}
+\label{sec:features}
+
+AQI exhibits strong temporal autocorrelation: the next
+hour's AQI class is highly predictable from recent history.
+The feature set (19 features total) is organized into three
+groups.
+
+\textbf{Momentum Features} capture temporal autocorrelation
+and are listed in Table~\ref{tab:features}.
+
+\begin{table}[h]
+  \caption{Momentum features (7 of 19 total).}
+  \label{tab:features}
+  \small
+  \begin{tabular}{@{}p{1.9cm}p{2.6cm}p{2.6cm}@{}}
+    \toprule
+    \textbf{Feature} & \textbf{Formula} & \textbf{Semantic} \\
+    \midrule
+    \texttt{pm10\_lag1}
+      & PM10 at $T{-}1$
+      & Prior particulate \\[2pt]
+    \texttt{aqi\_delta\_1h}
+      & $\mathrm{AQI}(T){-}\mathrm{AQI}(T{-}1)$
+      & 1 h AQI trend \\[2pt]
+    \texttt{aqi\_delta\_2h}
+      & $\mathrm{AQI}(T){-}\mathrm{AQI}(T{-}2)$
+      & 2 h AQI momentum \\[2pt]
+    \texttt{aqi\_delta\_3h}
+      & $\mathrm{AQI}(T){-}\mathrm{AQI}(T{-}3)$
+      & Sustained trend \\[2pt]
+    \texttt{pm10\_delta\_1h}
+      & $\mathrm{PM10}(T){-}\mathrm{PM10}(T{-}1)$
+      & Particulate change \\[2pt]
+    \texttt{pm25\_delta\_1h}
+      & $\mathrm{PM2.5}(T){-}\mathrm{PM2.5}(T{-}1)$
+      & Fine part. change \\[2pt]
+    \texttt{aqi\_roll\_std4}
+      & $\sigma(\mathrm{AQI}_{T-3..T})$
+      & 4 h volatility \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\textbf{Cyclical Time Encoding.}
+Raw hour (0 to 23) and month (1 to 12) integers break at
+natural boundaries: hour 23 and hour 0 are adjacent in time
+but numerically distant.  Sine and cosine encoding resolves
+this:
+\begin{align}
+  \mathrm{hour\_sin} &= \sin\!\left(\tfrac{2\pi h}{24}\right),
+  &\mathrm{hour\_cos} &= \cos\!\left(\tfrac{2\pi h}{24}\right)\\
+  \mathrm{month\_sin} &= \sin\!\left(\tfrac{2\pi m}{12}\right),
+  &\mathrm{month\_cos} &= \cos\!\left(\tfrac{2\pi m}{12}\right)
+\end{align}
+
+\textbf{Point-in-Time Pollutants.}
+The remaining eight features are the current-hour
+concentrations of \texttt{co}, \texttt{no}, \texttt{no2},
+\texttt{o3}, \texttt{so2}, \texttt{nh3}, \texttt{pm10},
+and \texttt{pm25\_ratio} (PM2.5 normalized by total
+pollutant mass).  Missing values are filled with
+per-feature medians persisted to
+\path{ml/model-registry/median.json}.
+
+% -------------------------------------------------------
+\subsection{Model Selection and Hyperparameter Tuning}
+
+Three model families were benchmarked: Logistic Regression
+(baseline), CatBoost, and XGBoost.  XGBoost consistently
+achieved the highest macro F1 across cross-validation folds
+and was selected for production.
+
+Hyperparameter optimization used Random Search (20 trials,
+3-fold time-series cross-validation) and Bayesian Search
+(20 trials).  Results are shown in Table~\ref{tab:hpo}.
+
+\begin{table}[h]
+  \caption{Hyperparameter optimization comparison.}
+  \label{tab:hpo}
+  \small
+  \begin{tabular}{@{}p{2.6cm}rr@{}}
+    \toprule
+    \textbf{Method} & \textbf{Best CV F1} & \textbf{Trials} \\
+    \midrule
+    Random Search   & \textbf{0.9425} & 20 \\
+    Bayesian Search & 0.9410          & 20 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Random Search was selected as the production strategy.
+The best hyperparameters are shown in
+Table~\ref{tab:bestparams}.
+
+\begin{table}[h]
+  \caption{Best XGBoost hyperparameters (Random Search).}
+  \label{tab:bestparams}
+  \small
+  \begin{tabular}{@{}p{2.2cm}rp{2.2cm}r@{}}
+    \toprule
+    \textbf{Parameter} & \textbf{Value}
+      & \textbf{Parameter} & \textbf{Value} \\
+    \midrule
+    colsample\_bytree & 0.5997 & learning\_rate     & 0.0810 \\
+    gamma             & 0.1516 & max\_delta\_step   & 1      \\
+    max\_depth        & 6      & min\_child\_weight & 8      \\
+    n\_estimators     & 542    & reg\_alpha         & 0.9359 \\
+    reg\_lambda       & 6.4496 & subsample          & 0.6599 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\textbf{Class-Weighted Training.}
+To handle class imbalance and improve prediction of
+safety-critical classes 4 and 5, a custom sample weight
+scheme was applied:
+\begin{itemize}
+  \item Sustained AQI transitions (new class held for two
+        or more consecutive hours): $5\times$ weight boost.
+  \item Single-hour AQI blips (new class reverts next
+        hour): $2\times$ weight boost.
+\end{itemize}
+Validation macro F1 is \textbf{0.9535}.  All training runs
+are tracked in MLflow under the experiment
+\texttt{AQI-Classification}, with the best model registered
+in the \texttt{AQI-XGBoost} model registry.
+
+% =======================================================
+\section{MLOps and Production Engineering}
+
+% -------------------------------------------------------
+\subsection{Containerization and Deployment}
+
+The FastAPI service is packaged as a Docker image built
+from the project \texttt{Dockerfile} and managed by
+\texttt{docker-compose.yml}.  Application source and model
+artifacts are mounted as volumes, decoupling code updates
+from image rebuilds.  Nginx proxies port 80 to the internal
+FastAPI port 8000.  A \texttt{systemd} unit file
+(\path{deploy/aqi-api.service}) ensures the container
+restarts automatically on crash or machine reboot.
+
+% -------------------------------------------------------
+\subsection{Observability}
+
+The system pushes all telemetry signals directly to Grafana
+Cloud without a self-hosted collection layer, using Basic
+auth via an OTLP gateway:
+
+\begin{itemize}
+  \item \textbf{Metrics (Grafana Mimir)} via the
+        OpenTelemetry SDK: prediction request count,
+        latency histogram, cache hit/miss rate, model drift
+        scores per city, and system CPU/memory.
+
+  \item \textbf{Logs (Grafana Loki)} via an async queue
+        handler: structured JSON logs from all service
+        components.
+
+  \item \textbf{Traces (Grafana Tempo)} via OTLP HTTP
+        exporter: distributed request traces from
+        \texttt{FastAPIInstrumentor}, with excluded URLs
+        for health and metrics endpoints to reduce noise.
+\end{itemize}
+
+Alerts are configured with threshold-based rules that push
+notifications to Teams, Slack, or Discord when drift or
+error rates exceed defined bounds.
+
+% -------------------------------------------------------
+\subsection{Testing and CI}
+
+The test suite under \path{tests/} covers three layers:
+
+\begin{itemize}
+  \item \path{test_api.py}: HTTP endpoint tests via the
+        FastAPI \texttt{TestClient}.
+  \item \path{test_inference.py}: feature pipeline and
+        model inference correctness.
+  \item \path{test_training_logic.py}: training logic
+        validation including class weight computation and
+        feature array shapes.
+\end{itemize}
+
+GitHub Actions \path{ci.yml} runs linting and the full
+test suite on every pull request.  Merges to \texttt{main}
+trigger \path{cd.yml}, which rebuilds and redeploys the
+service to EC2.
+
+% =======================================================
+\section{Results}
+
+\begin{table}[h]
+  \caption{Production system performance summary.}
+  \label{tab:results}
+  \small
+  \begin{tabular}{@{}p{3.7cm}p{3.5cm}@{}}
+    \toprule
+    \textbf{Metric} & \textbf{Value} \\
+    \midrule
+    Cross-validated macro F1    & 0.9425 \\
+    Validation macro F1         & 0.9535 \\
+    Cities covered              & 99 \\
+    Features at inference       & 19 \\
+    Prediction latency (p50)    & $<$1 ms (Redis) \\
+    Warm-cache query latency    & 3 to 8 seconds \\
+    Cache TTL                   & 2 hours \\
+    Retraining frequency        & Daily (GitHub Actions) \\
+    MLflow model versions       & 11 or more \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The dominant error cases are transitions between adjacent
+classes, which is expected given their similar pollutant
+concentrations.  The class-weighting scheme substantially
+improved recall for classes 4 and 5 relative to the
+unweighted baseline.
+
+% =======================================================
+\section{Discussion}
+
+\textbf{Design Decisions.}
+Pre-computing and caching all 99 city predictions at ingest
+time, rather than at request time, was the single most
+impactful engineering decision for serving quality.  It
+shifts the latency cost to the data pipeline layer where it
+is acceptable, and makes user-facing latency independent of
+model complexity or Athena query time.
+
+\textbf{Limitations.}
+The current feature set does not include wind direction or
+speed, which are known drivers of pollutant
+dispersion~\cite{cmaq2006}.  The training corpus covers a
+single year (2025 to 2026); longer histories would improve
+seasonal generalization.  Relying on a single upstream API
+means undocumented API behaviors propagate silently unless
+caught at ingestion.
+
+\textbf{Future Work.}
+Planned extensions include: (1)~incorporating
+meteorological features such as wind and precipitation to
+improve accuracy for classes 4 and 5; (2)~adding a
+geographic embedding to capture inter-city correlation;
+(3)~replacing the Redis TTL-based cache with a streaming
+architecture (Kafka) to push predictions to clients in real
+time; and (4)~implementing automated A/B testing between
+model versions in the registry.
+
+% =======================================================
+\section{Conclusion}
+
+AQI-MLops demonstrates that a full production MLOps system
+covering data engineering, feature engineering, model
+training, experiment tracking, containerized deployment,
+Redis-backed serving, and cloud-native observability can be
+built and maintained by a small team as an academic capstone
+project.  The system achieves 94\%+ macro F1 on a
+five-class air quality classification task across 99 global
+cities, with fully automated daily retraining and
+sub-millisecond prediction serving.  All code, pipeline
+definitions, model configurations, and infrastructure
+scripts are publicly available at the repository below.
+
+% =======================================================
+\section*{Repository}
+
+\textbf{GitHub:}
+\url{https://github.com/danhdanhtuan0308/AQI-MLops}
+
+\medskip
+\noindent
+The repository is organized as follows:
+
+\begin{lstlisting}[basicstyle=\footnotesize\ttfamily,
+                   frame=none, backgroundcolor=\color{white}]
+AQI-MLops/
+  app/             FastAPI service and telemetry
+    main.py          Routes, cache warming, background thread
+    inference.py     Feature building, XGBoost predict
+    telemetry.py     OTel tracing, Mimir, Loki logging
+  data-pipeline/   Batch backfill and live ingest
+    fetch_weather.py OWM API to S3 Parquet
+    lambda/
+      handler.py     Lambda A hourly live ingest
+  lakehouse/       DDL and merge logic
+    setup.sql        Athena DDL: Iceberg tables
+    merge_handler.py Lambda B: MERGE INTO aqi_unified
+    prediction_flush_handler.py  Lambda C Redis flush
+  ml/              Training pipeline and model registry
+    train.py         Feature eng, XGBoost, MLflow logging
+    best-config.yaml Best hyperparameters
+    model-registry/  model.ubj, features.json, median.json
+  experiement/     EDA and benchmarking notebooks
+  tests/           Unit and integration tests
+  deploy/          EC2 setup, Nginx, systemd service
+  .github/         CI, CD, and daily retraining workflows
+  Dockerfile
+  docker-compose.yml
+  pyproject.toml
+\end{lstlisting}
+
+% =======================================================
+\begin{thebibliography}{7}
+
+\bibitem{who2021}
+World Health Organization.
+\textit{WHO Global Air Quality Guidelines.}
+Geneva: WHO, 2021.
+
+\bibitem{cmaq2006}
+Byun, D., \& Schere, K.~L. (2006).
+Review of the governing equations, computational algorithms,
+and other components of the Models-3 Community Multiscale
+Air Quality (CMAQ) modeling system.
+\textit{Applied Mechanics Reviews}, 59(2), 51--77.
+
+\bibitem{zhao2018}
+Zhao, R., Gu, X., Xue, B., Zhang, J., \& Ren, W. (2018).
+Short period PM2.5 prediction based on multivariate linear
+regression model.
+\textit{PLOS ONE}, 13(7), e0201011.
+
+\bibitem{qi2019}
+Qi, Z., Wang, T., Song, G., Hu, W., Li, X., \& Zhang, Z.
+(2019).
+Deep air learning: Interpolation, prediction, and feature
+analysis of fine-grained air quality.
+\textit{IEEE Transactions on Knowledge and Data
+Engineering}, 32(12), 2285--2297.
+
+\bibitem{sculley2015}
+Sculley, D., et al. (2015).
+Hidden technical debt in machine learning systems.
+\textit{Advances in Neural Information Processing
+Systems}, 28.
+
+\bibitem{michelangelo2017}
+Hermann, J., \& Del Balso, M. (2017).
+Meet Michelangelo: Uber's Machine Learning Platform.
+\textit{Uber Engineering Blog}.
+
+\bibitem{fblearner2016}
+Dunn, J. (2016).
+Introducing FBLearner Flow: Facebook's AI backbone.
+\textit{Facebook Engineering Blog}.
+
+\end{thebibliography}
+
+\end{document}
