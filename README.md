@@ -2,7 +2,7 @@
 
 End-to-end MLOps pipeline for real-time Air Quality Index prediction across 99 global cities.
 
-Live dashboard: http://3.94.115.44
+Live dashboard: http://3.94.115.44 - I already shut this down due to cost of maintenance  
 
 ---
 ## Overview Architecture 
